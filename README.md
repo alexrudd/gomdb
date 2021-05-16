@@ -19,10 +19,10 @@ if _, err := db.Exec("SET search_path TO message_store,public;"); err != nil {
     log.Fatalf("setting search path: %s", err)
 }
 
-// create client
+// Create client
 client := gomdb.NewClient(db)
 
-// read from stream
+// Read from stream
 msgs, err := client.GetStreamMessages(context.Background(), stream)
 if err != nil {
     log.Fatalf("reading from stream: %s", err)
@@ -31,14 +31,14 @@ if err != nil {
 log.Println(msgs)
 ```
 
-See the [example](./example) directory for a more complete example.
+See the [example](./example) directory or [client_test.go](./client_test.go) for a more complete examples.
 
 ## Running tests
 
 The unit tests require an instance of Message DB running to test against.
 
 ```bash
-# start Message DB
+# Start Message DB
 docker build -t message-db .
 docker run -d --rm \
     -p 5432:5432 \
@@ -46,6 +46,64 @@ docker run -d --rm \
     message-db \
     -c message_store.sql_condition=on
 
-# run tests
+# Run tests
 go test -condition-on
 ```
+
+## Subscriptions
+
+Subscriptions are built on top of the `GetStreamMessages` and `GetCategoryMessages` methods and simply poll from the last read version or position.
+
+```go
+subCtx, cancel := context.WithCancel(context.Background())
+defer cancel() // cancel will stop the subscription
+
+err := client.SubscribeToCategory(subCtx, "user",
+    func(m *gomdb.Message) { // Message handler
+        log.Printf("Received message: %v", m)
+    },
+    func(live bool) { // Liveness handler
+        if live {
+            log.Print("subscription is handling live messages!")
+        } else {
+            log.Print("subscription has fallen behind")
+        }
+    },
+    func(err error) { // subscription dropped handler
+        if err != nil {
+            log.Fatalf("subscription dropped with error: %s", err)
+        }
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+The client can be configured with different polling strategies to reduce reads to the database for subscriptions that rarely receive messages
+
+```go
+// Client configured with exponential backoff
+client := gomdb.NewClient(
+    db,
+    gomdb.WithSubPollingStrategy(
+        gomdb.ExpBackoffPolling(
+            50*time.Millisecond, // minimum polling delay on no messages read
+            5*time.Second,       // maximum polling delay on no messages read
+            2,                   // delay will double for every read that returns no messages
+        ),
+    ),
+)
+
+// Client configured with constant polling interval
+client = gomdb.NewClient(
+    db,
+    gomdb.WithSubPollingStrategy(
+        gomdb.ConstantPolling(100*time.Millisecond), // polling delay on no messages read
+    ),
+)
+```
+
+## Contributing
+
+All contributions welcome, especially anyone with SQL experience who could tidy up how queries are run and how read errors are handled.
