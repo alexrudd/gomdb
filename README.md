@@ -1,5 +1,8 @@
 # Go Message DB Client
 
+[![Checks](https://github.com/alexrudd/gomdb/actions/workflows/checks.yml/badge.svg?event=push)](https://github.com/alexrudd/gomdb/actions/workflows/checks.yml)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/alexrudd/gomdb)](https://pkg.go.dev/github.com/alexrudd/gomdb)
+
 This module implements a thin Go wrapper around the [Message DB](https://github.com/message-db/message-db) message store. Message DB is an event store implemented on top of Postgres, ideal for event sourcing applications.
 
 The client supports all Message DB read and write procedures, choosing to default to their simplest forms and providing configurability through options functions.
