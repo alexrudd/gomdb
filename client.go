@@ -1,3 +1,4 @@
+// Package gomdb provides a Client for calling Message DB procedures.
 package gomdb
 
 import (
@@ -15,6 +16,9 @@ const (
 	NoStreamVersion = int64(-1)
 	// AnyVersion allows writing of a message regardless of the stream version.
 	AnyVersion = int64(-2)
+	// DefaultPollingInterval defines the default polling duration for
+	// subscriptions.
+	DefaultPollingInterval = 100 * time.Millisecond
 )
 
 // ErrUnexpectedStreamVersion is returned when a stream is not at the expected
@@ -23,16 +27,22 @@ var ErrUnexpectedStreamVersion = errors.New("unexpected stream version when writ
 
 // Client exposes the message-db interface.
 type Client struct {
-	db           *sql.DB
-	pollInterval time.Duration
+	db              *sql.DB
+	pollingStrategy PollingStrategy
 }
 
 // NewClient returns a new message-db client for the provided database.
-func NewClient(db *sql.DB) *Client {
-	return &Client{
-		db:           db,
-		pollInterval: 100 * time.Millisecond,
+func NewClient(db *sql.DB, opts ...ClientOption) *Client {
+	c := &Client{
+		db:              db,
+		pollingStrategy: ConstantPolling(DefaultPollingInterval),
 	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
 }
 
 // WriteMessage attempted to write the proposed message to the specifed stream.
@@ -77,18 +87,18 @@ func (c *Client) WriteMessage(ctx context.Context, stream StreamIdentifier, mess
 
 	defer rows.Close()
 
-	// read revision from results.
-	var revision int64
+	// read version from results.
+	var version int64
 
 	if !rows.Next() {
 		return 0, errors.New("write succeeded but no rows were returned")
 	}
 
-	if err = rows.Scan(&revision); err != nil {
-		return 0, fmt.Errorf("write succeeded but could not read returned revision: %w", err)
+	if err = rows.Scan(&version); err != nil {
+		return 0, fmt.Errorf("write succeeded but could not read returned version: %w", err)
 	}
 
-	return revision, nil
+	return version, nil
 }
 
 // GetStreamMessages reads messages from an individual stream. By default the
@@ -234,7 +244,7 @@ func (c *Client) GetStreamVersion(ctx context.Context, stream StreamIdentifier) 
 
 	defer rows.Close()
 
-	// read revision from results.
+	// read version from results.
 
 	if !rows.Next() {
 		return 0, errors.New("no rows were returned")
@@ -242,7 +252,7 @@ func (c *Client) GetStreamVersion(ctx context.Context, stream StreamIdentifier) 
 
 	var value interface{}
 	if err = rows.Scan(&value); err != nil {
-		return 0, fmt.Errorf("reading stream revision: %w", err)
+		return 0, fmt.Errorf("reading stream version: %w", err)
 	}
 
 	if value == nil {
@@ -261,8 +271,8 @@ type MessageHandler func(*Message)
 // whether it is catching up.
 type LivenessHandler func(bool)
 
-// ErrorHandler handles errors that appear and stop the subscription.
-type ErrorHandler func(error)
+// SubDroppedHandler handles errors that appear and stop the subscription.
+type SubDroppedHandler func(error)
 
 // SubscribeToStream subscribes to a stream and asynchronously passes messages
 // to the message handler in batches. Once a subscription has caught up it will
@@ -272,13 +282,15 @@ type ErrorHandler func(error)
 // the subscription falls behind again it will called the LivenessHandler with
 // false.
 // If there is an error while reading messages then the subscription will be
-// stopped and the ErrorHandler will be called with the stopping error.
+// stopped and the SubDroppedHandler will be called with the stopping error. If
+// the subscription is cancelled then the SubDroppedHandler will be called with
+// nil.
 func (c *Client) SubscribeToStream(
 	ctx context.Context,
 	stream StreamIdentifier,
 	handleMessage MessageHandler,
 	handleLiveness LivenessHandler,
-	handleError ErrorHandler,
+	handleDropped SubDroppedHandler,
 	opts ...GetStreamOption,
 ) error {
 	cfg := newDefaultStreamConfig()
@@ -289,41 +301,38 @@ func (c *Client) SubscribeToStream(
 	// validate inputs
 	if err := stream.validate(); err != nil {
 		return fmt.Errorf("validating stream identifier: %w", err)
-	} else if handleMessage == nil || handleLiveness == nil || handleError == nil {
+	} else if handleMessage == nil || handleLiveness == nil || handleDropped == nil {
 		return errors.New("all subscription handlers are required")
 	} else if err := cfg.validate(); err != nil {
 		return fmt.Errorf("validating options: %w", err)
 	}
 
 	// ignore context cancelled errors
-	wrappedHandleError := func(e error) {
+	wrappedHandleDropped := func(e error) {
 		if errors.Is(e, context.Canceled) {
-			handleError(nil)
+			handleDropped(nil)
 		} else {
-			handleError(ctx.Err())
+			handleDropped(ctx.Err())
 		}
 	}
 
 	go func() {
-		poll := time.NewTicker(1)
+		poll := time.NewTimer(0)
 		live := false
+		defer poll.Stop()
 
 		for {
 			// check for context cancelled
 			select {
 			case <-ctx.Done():
-				wrappedHandleError(ctx.Err())
+				wrappedHandleDropped(ctx.Err())
 				return
 			case <-poll.C:
 			}
 
-			msgs, err := c.GetStreamMessages(ctx, stream, func(c *streamConfig) {
-				c.version = cfg.version
-				c.batchSize = cfg.batchSize
-				c.condition = cfg.condition
-			})
+			msgs, err := c.GetStreamMessages(ctx, stream, func(c *streamConfig) { *c = *cfg })
 			if err != nil {
-				wrappedHandleError(err)
+				wrappedHandleDropped(err)
 				return
 			}
 
@@ -339,13 +348,100 @@ func (c *Client) SubscribeToStream(
 			// caught up and can go live. Otherwise we've fallen behind.
 			if len(msgs) < int(cfg.batchSize) && !live {
 				live = true
-				poll.Reset(c.pollInterval)
 				handleLiveness(live)
 			} else if len(msgs) == int(cfg.batchSize) && live {
 				live = false
-				poll.Reset(0)
 				handleLiveness(live)
 			}
+
+			poll.Reset(c.pollingStrategy(int64(len(msgs)), cfg.batchSize))
+		}
+	}()
+
+	return nil
+}
+
+// SubscribeToCategory subscribes to a category and asynchronously passes messages
+// to the message handler in batches. Once a subscription has caught up it will
+// poll the database periodically for new messages. To stop a subscription
+// cancel the provided context.
+// When a subscription catches up it will call the LivenessHandler with true. If
+// the subscription falls behind again it will called the LivenessHandler with
+// false.
+// If there is an error while reading messages then the subscription will be
+// stopped and the SubDroppedHandler will be called with the stopping error. If
+// the subscription is cancelled then the SubDroppedHandler will be called with
+// nil.
+func (c *Client) SubscribeToCategory(
+	ctx context.Context,
+	category string,
+	handleMessage MessageHandler,
+	handleLiveness LivenessHandler,
+	handleDropped SubDroppedHandler,
+	opts ...GetCategoryOption,
+) error {
+	cfg := newDefaultCategoryConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	// validate inputs
+	if strings.Contains(category, StreamNameSeparator) {
+		return fmt.Errorf("category cannot contain stream name separator (%s)", StreamNameSeparator)
+	} else if handleMessage == nil || handleLiveness == nil || handleDropped == nil {
+		return errors.New("all subscription handlers are required")
+	} else if err := cfg.validate(); err != nil {
+		return fmt.Errorf("validating options: %w", err)
+	}
+
+	// ignore context cancelled errors
+	wrappedHandleDropped := func(e error) {
+		if errors.Is(e, context.Canceled) {
+			handleDropped(nil)
+		} else {
+			handleDropped(ctx.Err())
+		}
+	}
+
+	go func() {
+		poll := time.NewTimer(0)
+		live := false
+		defer poll.Stop()
+
+		for {
+			// check for context cancelled
+			select {
+			case <-ctx.Done():
+				wrappedHandleDropped(ctx.Err())
+				return
+			case <-poll.C:
+			}
+
+			msgs, err := c.GetCategoryMessages(ctx, category, func(c *categoryConfig) { *c = *cfg })
+			if err != nil {
+				wrappedHandleDropped(err)
+				return
+			}
+
+			for _, msg := range msgs {
+				handleMessage(msg)
+			}
+
+			if len(msgs) > 0 {
+				cfg.position = msgs[len(msgs)-1].GlobalPosition + 1
+			}
+
+			// if we've read fewer messages than the batch size we must have
+			// caught up and can go live. Otherwise we've fallen behind.
+			if len(msgs) < int(cfg.batchSize) && !live {
+				live = true
+				handleLiveness(live)
+			} else if len(msgs) == int(cfg.batchSize) && live {
+				live = false
+				handleLiveness(live)
+			}
+
+			poll.Reset(c.pollingStrategy(int64(len(msgs)), cfg.batchSize))
 		}
 	}()
 

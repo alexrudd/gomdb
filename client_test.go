@@ -64,13 +64,16 @@ func NewClient(t *testing.T) *gomdb.Client {
 
 // NewTestStream creates a new StreamIdentifier using the provided category
 // prefix.
-func NewTestStream(catPrefix string) gomdb.StreamIdentifier {
-	randstr.Base62(5)
-
+func NewTestStream(category string) gomdb.StreamIdentifier {
 	return gomdb.StreamIdentifier{
-		Category: catPrefix + randstr.Base62(5),
+		Category: category,
 		ID:       randstr.Base62(10),
 	}
+}
+
+// NewTestCategory returns a unique category name
+func NewTestCategory(prefix string) string {
+	return prefix + randstr.Base62(10)
 }
 
 // PopulateStream creates the specified number of messages and writes them
@@ -97,10 +100,8 @@ func PopulateStream(t *testing.T, client *gomdb.Client, stream gomdb.StreamIdent
 
 // PopulateCategory creates multiple streams within a single categatory and
 // populates them with messages. The actual category is returned.
-func PopulateCategory(t *testing.T, client *gomdb.Client, catPrefix string, streams, messages int) string {
+func PopulateCategory(t *testing.T, client *gomdb.Client, category string, streams, messages int) string {
 	t.Helper()
-
-	category := catPrefix + randstr.Base62(5)
 
 	for i := 0; i < streams; i++ {
 		stream := gomdb.StreamIdentifier{
@@ -123,7 +124,7 @@ func TestWriteMessage(t *testing.T) {
 	t.Run("stream does not exist", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("new_stream")
+		stream := NewTestStream(NewTestCategory("new_stream"))
 		msg := gomdb.ProposedMessage{
 			ID:   uuid.NewV4().String(),
 			Type: "TestMessage",
@@ -143,7 +144,7 @@ func TestWriteMessage(t *testing.T) {
 	t.Run("skip OCC check", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("any_stream")
+		stream := NewTestStream(NewTestCategory("any_stream"))
 		msg := gomdb.ProposedMessage{
 			ID:   uuid.NewV4().String(),
 			Type: "TestMessage",
@@ -168,7 +169,7 @@ func TestWriteMessage(t *testing.T) {
 	t.Run("fail OCC check", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("any_stream")
+		stream := NewTestStream(NewTestCategory("any_stream"))
 		msg := gomdb.ProposedMessage{
 			ID:   uuid.NewV4().String(),
 			Type: "TestMessage",
@@ -196,7 +197,7 @@ func TestGetStreamMessages(t *testing.T) {
 	t.Run("stream does not exist", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("nonexistant")
+		stream := NewTestStream(NewTestCategory("nonexistant"))
 
 		msgs, err := client.GetStreamMessages(context.TODO(), stream)
 		if err != nil {
@@ -211,7 +212,7 @@ func TestGetStreamMessages(t *testing.T) {
 	t.Run("get entire stream", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("entire")
+		stream := NewTestStream(NewTestCategory("entire"))
 		PopulateStream(t, client, stream, 10)
 
 		msgs, err := client.GetStreamMessages(context.TODO(), stream)
@@ -227,7 +228,7 @@ func TestGetStreamMessages(t *testing.T) {
 	t.Run("get first half of stream", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("half")
+		stream := NewTestStream(NewTestCategory("half"))
 		PopulateStream(t, client, stream, 10)
 
 		msgs, err := client.GetStreamMessages(context.TODO(), stream, gomdb.WithStreamBatchSize(5))
@@ -249,7 +250,7 @@ func TestGetStreamMessages(t *testing.T) {
 	t.Run("get second half of stream", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("half")
+		stream := NewTestStream(NewTestCategory("half"))
 		PopulateStream(t, client, stream, 10)
 
 		msgs, err := client.GetStreamMessages(context.TODO(), stream, gomdb.WithStreamBatchSize(5), gomdb.FromVersion(5))
@@ -275,7 +276,7 @@ func TestGetStreamMessages(t *testing.T) {
 			t.Skip()
 		}
 
-		stream := NewTestStream("conditional")
+		stream := NewTestStream(NewTestCategory("conditional"))
 		PopulateStream(t, client, stream, 10)
 
 		msgs, err := client.GetStreamMessages(context.TODO(), stream,
@@ -319,7 +320,7 @@ func TestGetCategoryMessages(t *testing.T) {
 	t.Run("get all messages for category", func(t *testing.T) {
 		t.Parallel()
 
-		category := PopulateCategory(t, client, "category", 5, 10)
+		category := PopulateCategory(t, client, NewTestCategory("category"), 5, 10)
 
 		msgs, err := client.GetCategoryMessages(context.TODO(), category)
 		if err != nil {
@@ -334,7 +335,7 @@ func TestGetCategoryMessages(t *testing.T) {
 	t.Run("get half messages for category", func(t *testing.T) {
 		t.Parallel()
 
-		category := PopulateCategory(t, client, "half", 5, 10)
+		category := PopulateCategory(t, client, NewTestCategory("half"), 5, 10)
 
 		// read all messages.
 		msgs, _ := client.GetCategoryMessages(context.TODO(), category)
@@ -356,7 +357,7 @@ func TestGetCategoryMessages(t *testing.T) {
 	t.Run("read only first 15 messages in category", func(t *testing.T) {
 		t.Parallel()
 
-		category := PopulateCategory(t, client, "batched", 5, 10)
+		category := PopulateCategory(t, client, NewTestCategory("batched"), 5, 10)
 
 		msgs, err := client.GetCategoryMessages(context.TODO(), category, gomdb.WithCategoryBatchSize(15))
 		if err != nil {
@@ -371,7 +372,7 @@ func TestGetCategoryMessages(t *testing.T) {
 	t.Run("read as consumer group", func(t *testing.T) {
 		t.Parallel()
 
-		category := PopulateCategory(t, client, "batched", 5, 10)
+		category := PopulateCategory(t, client, NewTestCategory("consumer"), 5, 10)
 
 		msgs1, err := client.GetCategoryMessages(context.TODO(), category, gomdb.AsConsumerGroup(0, 2))
 		if err != nil {
@@ -393,7 +394,42 @@ func TestGetCategoryMessages(t *testing.T) {
 	t.Run("read with correlation", func(t *testing.T) {
 		t.Parallel()
 
-		t.Skip() // TODO
+		category := NewTestCategory("correlation")
+		stream := NewTestStream(category)
+
+		// write correlated event
+		_, _ = client.WriteMessage(context.TODO(), stream, gomdb.ProposedMessage{
+			ID:   uuid.NewV4().String(),
+			Type: "Correlated",
+			Data: "data",
+			Metadata: map[string]string{
+				gomdb.CorrelationKey: "correlated",
+			},
+		}, gomdb.AnyVersion)
+
+		// write uncorrelated event
+		_, _ = client.WriteMessage(context.TODO(), stream, gomdb.ProposedMessage{
+			ID:   uuid.NewV4().String(),
+			Type: "Uncorrelated",
+			Data: "data",
+			Metadata: map[string]string{
+				gomdb.CorrelationKey: "uncorrelated",
+			},
+		}, gomdb.AnyVersion)
+
+		msgs, err := client.GetCategoryMessages(context.TODO(), category, gomdb.WithCorrelation("correlated"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 correlated message, actual: %v", len(msgs))
+		}
+
+		if msgs[0].Type != "Correlated" {
+			t.Fatalf("expected message type of Correlated, actual: %s", msgs[0].Type)
+		}
+
 	})
 
 	t.Run("read with condition", func(t *testing.T) {
@@ -403,7 +439,7 @@ func TestGetCategoryMessages(t *testing.T) {
 			t.Skip()
 		}
 
-		category := PopulateCategory(t, client, "batched", 5, 10)
+		category := PopulateCategory(t, client, NewTestCategory("condition"), 5, 10)
 
 		msgs, err := client.GetCategoryMessages(context.TODO(), category,
 			gomdb.WithCategoryCondition("MOD(messages.position, 2) = 0"),
@@ -433,7 +469,7 @@ func TestGetLastStreamMessage(t *testing.T) {
 	t.Run("stream does not exist", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("nonexistant")
+		stream := NewTestStream(NewTestCategory("nonexistant"))
 
 		msg, err := client.GetLastStreamMessage(context.TODO(), stream)
 		if err != nil {
@@ -448,7 +484,7 @@ func TestGetLastStreamMessage(t *testing.T) {
 	t.Run("get last message", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("stream")
+		stream := NewTestStream(NewTestCategory("stream"))
 		PopulateStream(t, client, stream, 3)
 
 		msg, err := client.GetLastStreamMessage(context.TODO(), stream)
@@ -473,7 +509,7 @@ func TestGetStreamVersion(t *testing.T) {
 	t.Run("stream does not exist", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("nonexistant")
+		stream := NewTestStream(NewTestCategory("nonexistant"))
 
 		version, err := client.GetStreamVersion(context.TODO(), stream)
 		if err != nil {
@@ -488,7 +524,7 @@ func TestGetStreamVersion(t *testing.T) {
 	t.Run("get stream version", func(t *testing.T) {
 		t.Parallel()
 
-		stream := NewTestStream("stream")
+		stream := NewTestStream(NewTestCategory("stream"))
 		PopulateStream(t, client, stream, 3)
 
 		version, err := client.GetStreamVersion(context.TODO(), stream)
@@ -504,14 +540,14 @@ func TestGetStreamVersion(t *testing.T) {
 
 // TestSubscribeToStream tests the SubscribeToStream API.
 func TestSubscribeToStream(t *testing.T) {
-	// t.Parallel()
+	t.Parallel()
 
 	client := NewClient(t)
 
 	t.Run("subscribe to empty stream", func(t *testing.T) {
-		// t.Parallel()
+		t.Parallel()
 
-		stream := NewTestStream("nonexistant")
+		stream := NewTestStream(NewTestCategory("empty"))
 		ctx, cancel := context.WithCancel(context.TODO())
 		defer cancel()
 
@@ -544,9 +580,9 @@ func TestSubscribeToStream(t *testing.T) {
 	})
 
 	t.Run("subscribe to new messages", func(t *testing.T) {
-		// t.Parallel()
+		t.Parallel()
 
-		stream := NewTestStream("nonexistant")
+		stream := NewTestStream(NewTestCategory("incoming"))
 		ctx, cancel := context.WithCancel(context.TODO())
 		defer cancel()
 
@@ -572,9 +608,9 @@ func TestSubscribeToStream(t *testing.T) {
 	})
 
 	t.Run("catch up to stream then go live", func(t *testing.T) {
-		// t.Parallel()
+		t.Parallel()
 
-		stream := NewTestStream("nonexistant")
+		stream := NewTestStream(NewTestCategory("catchup"))
 		PopulateStream(t, client, stream, 10)
 
 		ctx, cancel := context.WithCancel(context.TODO())
@@ -605,5 +641,132 @@ func TestSubscribeToStream(t *testing.T) {
 
 		received.Wait()
 	})
+}
 
+// TestSubscribeToCategory tests the SubscribeToCategory API.
+func TestSubscribeToCategory(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient(t)
+
+	t.Run("subscribe to empty category", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+
+		goneLive := sync.WaitGroup{}
+		goneLive.Add(1)
+
+		err := client.SubscribeToCategory(
+			ctx,
+			NewTestCategory("empty"),
+			func(m *gomdb.Message) {
+				t.Fatal("No messages should exist on stream")
+			},
+			func(live bool) {
+				if !live {
+					t.Fatal("subscription should be live")
+				}
+				goneLive.Done()
+			},
+			func(err error) {
+				if err != nil {
+					t.Fatalf("received subscription error: %s", err)
+				}
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		goneLive.Wait()
+	})
+
+	t.Run("subscribe to new category messages", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+
+		goneLive := sync.WaitGroup{}
+		goneLive.Add(1)
+		received := sync.WaitGroup{}
+		received.Add(30)
+
+		category := NewTestCategory("empty")
+
+		err := client.SubscribeToCategory(
+			ctx,
+			category,
+			func(m *gomdb.Message) {
+				received.Done()
+			},
+			func(live bool) {
+				if !live {
+					t.Fatal("subscription should be live")
+				}
+				goneLive.Done()
+			},
+			func(err error) {
+				if err != nil {
+					t.Fatalf("received subscription error: %s", err)
+				}
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		goneLive.Wait()
+
+		PopulateCategory(t, client, category, 3, 10)
+
+		received.Wait()
+	})
+
+	t.Run("catch up to category then go live", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+
+		goneLive := sync.WaitGroup{}
+		goneLive.Add(1)
+		received := sync.WaitGroup{}
+		received.Add(30)
+
+		category := NewTestCategory("empty")
+		PopulateCategory(t, client, category, 3, 10)
+
+		err := client.SubscribeToCategory(
+			ctx,
+			category,
+			func(m *gomdb.Message) {
+				received.Done()
+			},
+			func(live bool) {
+				if !live {
+					t.Fatal("subscription should be live")
+				}
+				goneLive.Done()
+			},
+			func(err error) {
+				if err != nil {
+					t.Fatalf("received subscription error: %s", err)
+				}
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		received.Wait()
+		goneLive.Wait()
+
+		// receive 10 more messages live
+		received.Add(10)
+		PopulateCategory(t, client, category, 2, 5)
+		received.Wait()
+	})
 }

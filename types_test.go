@@ -38,6 +38,14 @@ func Test_ProposedMessage_validate(t *testing.T) {
 			},
 			expErr: ErrMissingData,
 		},
+		{
+			name: "valid",
+			message: ProposedMessage{
+				ID:   uuid.NewV4().String(),
+				Type: "SomeType",
+				Data: "data",
+			},
+		},
 	}
 
 	for _, tc := range testcases {
@@ -86,6 +94,13 @@ func Test_StreamIdentifier_validate(t *testing.T) {
 				ID:       "123-abc",
 			},
 			expErr: ErrInvalidStreamID,
+		},
+		{
+			name: "valid",
+			sid: StreamIdentifier{
+				Category: "category",
+				ID:       "123abc",
+			},
 		},
 	}
 

@@ -1,6 +1,79 @@
 package gomdb
 
-import "errors"
+import (
+	"errors"
+	"math"
+	"time"
+)
+
+var (
+	// ErrInvalidReadStreamVersion is returned when the stream version inside a
+	// read call is less than zero.
+	ErrInvalidReadStreamVersion = errors.New("stream version cannot be less than 0")
+	// ErrInvalidReadBatchSize is returned when the batch size inside a read
+	// call is less than one.
+	ErrInvalidReadBatchSize = errors.New("batch size must be greater than 0")
+	// ErrInvalidReadPosition is returned when the stream position inside a
+	// read call is less than zero.
+	ErrInvalidReadPosition = errors.New("stream position cannot be less than 0")
+	// ErrInvalidConsumerGroupMember is returned when the consumer group ID
+	// index is either less than zero or greater than or equal to the consumer
+	// group size.
+	ErrInvalidConsumerGroupMember = errors.New("consumer group member must be >= 0 < group size")
+	// ErrInvalidConsumerGroupSize is returned when the consumer group size is
+	// less that zero.
+	ErrInvalidConsumerGroupSize = errors.New("consumer group size must be 0 or greater (0 to disbale consumer groups)")
+)
+
+// ClientOption is an option for modifiying how the Message DB client operates.
+type ClientOption func(*Client)
+
+// WithSubPollingStrategy configures the client with the specified
+// PollingStrategy.
+func WithSubPollingStrategy(strat PollingStrategy) ClientOption {
+	return func(c *Client) {
+		c.pollingStrategy = strat
+	}
+}
+
+// PollingStrategy returns the delay duration before the next polling attempt
+// based on how many messages were returned from the previous poll vs how many
+// were expected.
+type PollingStrategy func(retrieved, expected int64) time.Duration
+
+// ExpBackoffPolling returns an exponential polling backoff strategy that starts
+// at the min duration but is multipled for every read that did not return
+// any messages up to the max duration. The backoff duration is reset to min
+// everytime a message is read.
+func ExpBackoffPolling(min, max time.Duration, multiplier float64) PollingStrategy {
+	noMessageCount := 0
+	return func(retrieved, _ int64) time.Duration {
+		if retrieved > 0 {
+			noMessageCount = 0
+			return time.Duration(0)
+		}
+
+		backoff := time.Duration(math.Pow(multiplier, float64(noMessageCount))) * min
+		noMessageCount++
+
+		if backoff > max {
+			return max
+		}
+
+		return backoff
+	}
+}
+
+// ConstantPolling returns a constant interval polling strategy
+func ConstantPolling(interval time.Duration) PollingStrategy {
+	return func(retrieved, _ int64) time.Duration {
+		if retrieved > 0 {
+			return time.Duration(0)
+		}
+
+		return interval
+	}
+}
 
 // GetStreamOption is an option for modifiying how to read from a stream.
 type GetStreamOption func(*streamConfig)
@@ -35,9 +108,9 @@ type streamConfig struct {
 
 func (cfg *streamConfig) validate() error {
 	if cfg.version < 0 {
-		return errors.New("stream version cannot be less than 0")
+		return ErrInvalidReadStreamVersion
 	} else if cfg.batchSize < 1 {
-		return errors.New("batch size must be greater than 0")
+		return ErrInvalidReadBatchSize
 	}
 
 	return nil
@@ -123,13 +196,13 @@ func newDefaultCategoryConfig() *categoryConfig {
 
 func (cfg *categoryConfig) validate() error {
 	if cfg.position < 0 {
-		return errors.New("stream version cannot be less than 0")
+		return ErrInvalidReadPosition
 	} else if cfg.batchSize < 1 {
-		return errors.New("batch size must be greater than 0")
-	} else if cfg.consumerGroupMember < 0 {
-		return errors.New("consumer group member must be 0 or greater")
+		return ErrInvalidReadBatchSize
+	} else if cfg.consumerGroupMember < 0 || (cfg.consumerGroupSize > 0 && cfg.consumerGroupMember >= cfg.consumerGroupSize) {
+		return ErrInvalidConsumerGroupMember
 	} else if cfg.consumerGroupSize < 0 {
-		return errors.New("consumer group size must be 0 or greater (0 to disbale consumer groups)")
+		return ErrInvalidConsumerGroupSize
 	}
 
 	return nil
