@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -22,13 +23,15 @@ var ErrUnexpectedStreamVersion = errors.New("unexpected stream version when writ
 
 // Client exposes the message-db interface.
 type Client struct {
-	db *sql.DB
+	db           *sql.DB
+	pollInterval time.Duration
 }
 
 // NewClient returns a new message-db client for the provided database.
 func NewClient(db *sql.DB) *Client {
 	return &Client{
-		db: db,
+		db:           db,
+		pollInterval: 100 * time.Millisecond,
 	}
 }
 
@@ -249,4 +252,102 @@ func (c *Client) GetStreamVersion(ctx context.Context, stream StreamIdentifier) 
 	}
 
 	return 0, fmt.Errorf("unexpected column value type: %T", value)
+}
+
+// MessageHandler handles messages as they appear after being written.
+type MessageHandler func(*Message)
+
+// LivenessHandler handles whether the subscription is in a "live" state or
+// whether it is catching up.
+type LivenessHandler func(bool)
+
+// ErrorHandler handles errors that appear and stop the subscription.
+type ErrorHandler func(error)
+
+// SubscribeToStream subscribes to a stream and asynchronously passes messages
+// to the message handler in batches. Once a subscription has caught up it will
+// poll the database periodically for new messages. To stop a subscription
+// cancel the provided context.
+// When a subscription catches up it will call the LivenessHandler with true. If
+// the subscription falls behind again it will called the LivenessHandler with
+// false.
+// If there is an error while reading messages then the subscription will be
+// stopped and the ErrorHandler will be called with the stopping error.
+func (c *Client) SubscribeToStream(
+	ctx context.Context,
+	stream StreamIdentifier,
+	handleMessage MessageHandler,
+	handleLiveness LivenessHandler,
+	handleError ErrorHandler,
+	opts ...GetStreamOption,
+) error {
+	cfg := newDefaultStreamConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	// validate inputs
+	if err := stream.validate(); err != nil {
+		return fmt.Errorf("validating stream identifier: %w", err)
+	} else if handleMessage == nil || handleLiveness == nil || handleError == nil {
+		return errors.New("all subscription handlers are required")
+	} else if err := cfg.validate(); err != nil {
+		return fmt.Errorf("validating options: %w", err)
+	}
+
+	// ignore context cancelled errors
+	wrappedHandleError := func(e error) {
+		if errors.Is(e, context.Canceled) {
+			handleError(nil)
+		} else {
+			handleError(ctx.Err())
+		}
+	}
+
+	go func() {
+		poll := time.NewTicker(1)
+		live := false
+
+		for {
+			// check for context cancelled
+			select {
+			case <-ctx.Done():
+				wrappedHandleError(ctx.Err())
+				return
+			case <-poll.C:
+			}
+
+			msgs, err := c.GetStreamMessages(ctx, stream, func(c *streamConfig) {
+				c.version = cfg.version
+				c.batchSize = cfg.batchSize
+				c.condition = cfg.condition
+			})
+			if err != nil {
+				wrappedHandleError(err)
+				return
+			}
+
+			for _, msg := range msgs {
+				handleMessage(msg)
+			}
+
+			if len(msgs) > 0 {
+				cfg.version = msgs[len(msgs)-1].Version + 1
+			}
+
+			// if we've read fewer messages than the batch size we must have
+			// caught up and can go live. Otherwise we've fallen behind.
+			if len(msgs) < int(cfg.batchSize) && !live {
+				live = true
+				poll.Reset(c.pollInterval)
+				handleLiveness(live)
+			} else if len(msgs) == int(cfg.batchSize) && live {
+				live = false
+				poll.Reset(0)
+				handleLiveness(live)
+			}
+		}
+	}()
+
+	return nil
 }
