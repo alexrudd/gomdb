@@ -130,7 +130,7 @@ func (c *Client) GetStreamMessages(ctx context.Context, stream StreamIdentifier,
 
 	defer rows.Close()
 
-	msgs := make([]*Message, 0, cfg.batchSize) // this may not be efficient
+	msgs := []*Message{}
 	for rows.Next() {
 		msg, err := deserialiseMessage(rows)
 		if err != nil {
@@ -175,7 +175,7 @@ func (c *Client) GetCategoryMessages(ctx context.Context, category string, opts 
 
 	defer rows.Close()
 
-	msgs := make([]*Message, 0, cfg.batchSize) // this may not be efficient
+	msgs := []*Message{}
 	for rows.Next() {
 		msg, err := deserialiseMessage(rows)
 		if err != nil {

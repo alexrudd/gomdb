@@ -6,11 +6,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alexrudd/gomdb"
-	"github.com/gofrs/uuid"
 	_ "github.com/lib/pq"
 	"github.com/thanhpk/randstr"
 )
@@ -49,17 +50,21 @@ func NewClient(t *testing.T) *gomdb.Client {
 		db.Close()
 	})
 
-	// _, err = db.Exec("SET message_store.sql_condition TO on;")
-	// if err != nil {
-	// 	t.Fatalf("enabling condition parameter: %s", err)
-	// }
-
 	_, err = db.Exec("SET search_path TO message_store,public;")
 	if err != nil {
 		t.Fatalf("setting search path: %s", err)
 	}
 
 	return gomdb.NewClient(db)
+}
+
+// FakeUUID generates a fake but valid uuid for testing (this avoids importing
+// a uuid package).
+var monoclock = 0
+
+func FakeUUID() string {
+	monoclock++
+	return "abcd1234-ab12-cd34-" + fmt.Sprintf("%04d", monoclock) + "-" + strconv.FormatInt(time.Now().UnixNano(), 16)[4:]
 }
 
 // NewTestStream creates a new StreamIdentifier using the provided category
@@ -88,7 +93,7 @@ func PopulateStream(t *testing.T, client *gomdb.Client, stream gomdb.StreamIdent
 
 	for i := 0; i < messages; i++ {
 		version, err = client.WriteMessage(context.TODO(), stream, gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   FakeUUID(),
 			Type: "TestMessage",
 			Data: "data",
 		}, version)
@@ -126,7 +131,7 @@ func TestWriteMessage(t *testing.T) {
 
 		stream := NewTestStream(NewTestCategory("new_stream"))
 		msg := gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   FakeUUID(),
 			Type: "TestMessage",
 			Data: "data",
 		}
@@ -146,7 +151,7 @@ func TestWriteMessage(t *testing.T) {
 
 		stream := NewTestStream(NewTestCategory("any_stream"))
 		msg := gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   FakeUUID(),
 			Type: "TestMessage",
 			Data: "data",
 		}
@@ -155,7 +160,7 @@ func TestWriteMessage(t *testing.T) {
 		_, _ = client.WriteMessage(context.TODO(), stream, msg, gomdb.NoStreamVersion)
 
 		// write any version
-		msg.ID = uuid.NewV4().String()
+		msg.ID = FakeUUID()
 		version, err := client.WriteMessage(context.TODO(), stream, msg, gomdb.AnyVersion)
 		if err != nil {
 			t.Fatal(err)
@@ -171,7 +176,7 @@ func TestWriteMessage(t *testing.T) {
 
 		stream := NewTestStream(NewTestCategory("any_stream"))
 		msg := gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   FakeUUID(),
 			Type: "TestMessage",
 			Data: "data",
 		}
@@ -180,7 +185,7 @@ func TestWriteMessage(t *testing.T) {
 		_, _ = client.WriteMessage(context.TODO(), stream, msg, gomdb.NoStreamVersion)
 
 		// write to same version version
-		msg.ID = uuid.NewV4().String()
+		msg.ID = FakeUUID()
 		_, err := client.WriteMessage(context.TODO(), stream, msg, gomdb.NoStreamVersion)
 		if !errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
 			t.Fatal("expected OCC failure")
@@ -399,7 +404,7 @@ func TestGetCategoryMessages(t *testing.T) {
 
 		// write correlated event
 		_, _ = client.WriteMessage(context.TODO(), stream, gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   FakeUUID(),
 			Type: "Correlated",
 			Data: "data",
 			Metadata: map[string]string{
@@ -409,7 +414,7 @@ func TestGetCategoryMessages(t *testing.T) {
 
 		// write uncorrelated event
 		_, _ = client.WriteMessage(context.TODO(), stream, gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   FakeUUID(),
 			Type: "Uncorrelated",
 			Data: "data",
 			Metadata: map[string]string{

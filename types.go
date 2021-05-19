@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/gofrs/uuid"
 )
 
 var (
@@ -29,9 +27,6 @@ var (
 	ErrInvalidCategory = fmt.Errorf("category cannot contain separator (%s)", StreamNameSeparator)
 	// ErrMissingStreamID is returned when the stream identifier ID is missing.
 	ErrMissingStreamID = errors.New("ID cannot be blank")
-	// ErrInvalidStreamID is returned whenthe stream identifier ID contains the
-	// reserved stream name seperator character.
-	ErrInvalidStreamID = fmt.Errorf("ID cannot contain separator (%s)", StreamNameSeparator)
 )
 
 // StreamNameSeparator is the character used to separate the stream category
@@ -40,7 +35,7 @@ const StreamNameSeparator = "-"
 
 // Message represents a message that was stored in message-db.
 type Message struct {
-	ID             uuid.UUID
+	ID             string
 	Stream         StreamIdentifier
 	Type           string
 	Version        int64
@@ -92,7 +87,7 @@ type ProposedMessage struct {
 }
 
 func (pm *ProposedMessage) validate() error {
-	if _, err := uuid.FromString(pm.ID); err != nil {
+	if pm.ID == "" {
 		return ErrInvalidMessageID
 	} else if pm.Type == "" {
 		return ErrMissingType
@@ -121,8 +116,6 @@ func (si StreamIdentifier) validate() error {
 		return ErrInvalidCategory
 	} else if si.ID == "" {
 		return ErrMissingStreamID
-	} else if strings.Contains(si.ID, StreamNameSeparator) {
-		return ErrInvalidStreamID
 	}
 
 	return nil

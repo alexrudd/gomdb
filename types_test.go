@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-
-	"github.com/gofrs/uuid"
 )
 
 func Test_ProposedMessage_validate(t *testing.T) {
@@ -25,7 +23,7 @@ func Test_ProposedMessage_validate(t *testing.T) {
 		{
 			name: "missing type",
 			message: ProposedMessage{
-				ID:   uuid.NewV4().String(),
+				ID:   "someID",
 				Data: "data",
 			},
 			expErr: ErrMissingType,
@@ -33,7 +31,7 @@ func Test_ProposedMessage_validate(t *testing.T) {
 		{
 			name: "missing data",
 			message: ProposedMessage{
-				ID:   uuid.NewV4().String(),
+				ID:   "someID",
 				Type: "SomeType",
 			},
 			expErr: ErrMissingData,
@@ -41,7 +39,7 @@ func Test_ProposedMessage_validate(t *testing.T) {
 		{
 			name: "valid",
 			message: ProposedMessage{
-				ID:   uuid.NewV4().String(),
+				ID:   "someID",
 				Type: "SomeType",
 				Data: "data",
 			},
@@ -88,18 +86,10 @@ func Test_StreamIdentifier_validate(t *testing.T) {
 			expErr: ErrMissingStreamID,
 		},
 		{
-			name: "invalid ID",
-			sid: StreamIdentifier{
-				Category: "category",
-				ID:       "123-abc",
-			},
-			expErr: ErrInvalidStreamID,
-		},
-		{
 			name: "valid",
 			sid: StreamIdentifier{
 				Category: "category",
-				ID:       "123abc",
+				ID:       "123-abc",
 			},
 		},
 	}
