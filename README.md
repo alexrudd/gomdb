@@ -34,7 +34,7 @@ if err != nil {
 log.Println(msgs)
 ```
 
-See the [examples](./tests/example) or [tests](./tests) directory for more complete examples.
+See the [examples](./tests/examples) or [tests](./tests) directory for more complete examples.
 
 ## Subscriptions
 
