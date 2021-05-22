@@ -34,24 +34,7 @@ if err != nil {
 log.Println(msgs)
 ```
 
-See the [example](./example) directory or [client_test.go](./client_test.go) for a more complete examples.
-
-## Running tests
-
-The unit tests require an instance of Message DB running to test against.
-
-```bash
-# Start Message DB
-docker build -t message-db .
-docker run -d --rm \
-    -p 5432:5432 \
-    -e POSTGRES_HOST_AUTH_METHOD=trust \
-    message-db \
-    -c message_store.sql_condition=on
-
-# Run tests
-go test -condition-on
-```
+See the [examples](./tests/example) or [tests](./tests) directory for more complete examples.
 
 ## Subscriptions
 
@@ -106,6 +89,12 @@ client = gomdb.NewClient(
     ),
 )
 ```
+
+## Running tests
+
+The unit tests can be run with `go test`.
+
+See the [integration tests README](./tests/README.md) for instructions on how to run integration tests.
 
 ## Contributing
 

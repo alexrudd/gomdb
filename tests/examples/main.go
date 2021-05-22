@@ -8,7 +8,6 @@ import (
 	"github.com/alexrudd/gomdb"
 	"github.com/gofrs/uuid"
 	_ "github.com/lib/pq"
-	"github.com/thanhpk/randstr"
 )
 
 // Message is an arbitrary message type.
@@ -34,7 +33,7 @@ func main() {
 	client := gomdb.NewClient(db)
 	stream := gomdb.StreamIdentifier{
 		Category: "demo",
-		ID:       randstr.Base62(10),
+		ID:       uuid.NewV4().String(),
 	}
 
 	// write a message
