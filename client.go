@@ -27,15 +27,17 @@ var ErrUnexpectedStreamVersion = errors.New("unexpected stream version when writ
 
 // Client exposes the message-db interface.
 type Client struct {
-	db              *sql.DB
-	pollingStrategy PollingStrategy
+	db                  *sql.DB
+	defaultPollingStrat func() PollingStrategy
 }
 
 // NewClient returns a new message-db client for the provided database.
 func NewClient(db *sql.DB, opts ...ClientOption) *Client {
 	c := &Client{
-		db:              db,
-		pollingStrategy: ConstantPolling(DefaultPollingInterval),
+		db: db,
+		// default polling strategy is used for new subscriptions that don't
+		// specify their own polling strategy.
+		defaultPollingStrat: ConstantPolling(DefaultPollingInterval),
 	}
 
 	for _, opt := range opts {
@@ -105,7 +107,7 @@ func (c *Client) WriteMessage(ctx context.Context, stream StreamIdentifier, mess
 // stream is read from the beginning with a batch size of 1000. Use
 // GetStreamOptions to adjust this behaviour.
 func (c *Client) GetStreamMessages(ctx context.Context, stream StreamIdentifier, opts ...GetStreamOption) ([]*Message, error) {
-	cfg := newDefaultStreamConfig()
+	cfg := newDefaultStreamConfig(c.defaultPollingStrat())
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -150,7 +152,7 @@ func (c *Client) GetStreamMessages(ctx context.Context, stream StreamIdentifier,
 // Use GetCategoryOptions to adjust this behaviour and to configure consumer
 // groups and filtering.
 func (c *Client) GetCategoryMessages(ctx context.Context, category string, opts ...GetCategoryOption) ([]*Message, error) {
-	cfg := newDefaultCategoryConfig()
+	cfg := newDefaultCategoryConfig(c.defaultPollingStrat())
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -293,7 +295,7 @@ func (c *Client) SubscribeToStream(
 	handleDropped SubDroppedHandler,
 	opts ...GetStreamOption,
 ) error {
-	cfg := newDefaultStreamConfig()
+	cfg := newDefaultStreamConfig(c.defaultPollingStrat())
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -354,7 +356,7 @@ func (c *Client) SubscribeToStream(
 				handleLiveness(live)
 			}
 
-			poll.Reset(c.pollingStrategy(int64(len(msgs)), cfg.batchSize))
+			poll.Reset(cfg.pollingStrat(int64(len(msgs)), cfg.batchSize))
 		}
 	}()
 
@@ -380,7 +382,7 @@ func (c *Client) SubscribeToCategory(
 	handleDropped SubDroppedHandler,
 	opts ...GetCategoryOption,
 ) error {
-	cfg := newDefaultCategoryConfig()
+	cfg := newDefaultCategoryConfig(c.defaultPollingStrat())
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -441,7 +443,7 @@ func (c *Client) SubscribeToCategory(
 				handleLiveness(live)
 			}
 
-			poll.Reset(c.pollingStrategy(int64(len(msgs)), cfg.batchSize))
+			poll.Reset(cfg.pollingStrat(int64(len(msgs)), cfg.batchSize))
 		}
 	}()
 

@@ -18,13 +18,13 @@ func Test_PollingStrategies(t *testing.T) {
 	}{
 		{
 			name:      "constant polling",
-			strategy:  ConstantPolling(time.Second),
+			strategy:  ConstantPolling(time.Second)(),
 			retrieved: []int64{0, 0, 1, 1},
 			delays:    []time.Duration{time.Second, time.Second, 0, 0},
 		},
 		{
 			name:      "exponential polling",
-			strategy:  ExpBackoffPolling(time.Second, 10*time.Second, 2),
+			strategy:  ExpBackoffPolling(time.Second, 10*time.Second, 2)(),
 			retrieved: []int64{1, 1, 0, 0, 0, 0, 0, 0},
 			delays:    []time.Duration{0, 0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second},
 		},
