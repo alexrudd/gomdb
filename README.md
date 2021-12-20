@@ -66,13 +66,13 @@ if err != nil {
 }
 ```
 
-The client can be configured with different polling strategies to reduce reads to the database for subscriptions that rarely receive messages
+Different polling strategies can be configured to reduce reads to the database for subscriptions that rarely receive messages. A default strategy can be set in the client, or a subscription specific strategy can be set when creating a subscription.
 
 ```go
-// Client configured with exponential backoff
+// Client configured with exponential backoff as default strategy.
 client := gomdb.NewClient(
     db,
-    gomdb.WithSubPollingStrategy(
+    gomdb.WithDefaultPollingStrategy(
         gomdb.ExpBackoffPolling(
             50*time.Millisecond, // minimum polling delay on no messages read
             5*time.Second,       // maximum polling delay on no messages read
@@ -81,11 +81,21 @@ client := gomdb.NewClient(
     ),
 )
 
-// Client configured with constant polling interval
+// Client configured with constant polling interval as default strategy.
 client = gomdb.NewClient(
     db,
-    gomdb.WithSubPollingStrategy(
+    gomdb.WithDefaultPollingStrategy(
         gomdb.ConstantPolling(100*time.Millisecond), // polling delay on no messages read
+    ),
+)
+
+// Default strategy overidden for specific subscription.
+client.SubscribeToCategory(subCtx, "user",
+    func(m *gomdb.Message) {}, // Message handler
+    func(live bool) {},        // Liveness handler
+    func(err error) {},        // subscription dropped handler
+    gomdb.WithCategoryPollingStrategy(
+        gomdb.ConstantPolling(time.Second)()), // poll every second
     ),
 )
 ```
