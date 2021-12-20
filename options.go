@@ -28,11 +28,11 @@ var (
 // ClientOption is an option for modifiying how the Message DB client operates.
 type ClientOption func(*Client)
 
-// WithSubPollingStrategy configures the client with the specified
-// PollingStrategy.
-func WithSubPollingStrategy(strat PollingStrategy) ClientOption {
+// WithDefaultPollingStrategy configures to use the specified PollingStrategy
+// as the default for new subscriptions.
+func WithDefaultPollingStrategy(strat func() PollingStrategy) ClientOption {
 	return func(c *Client) {
-		c.pollingStrategy = strat
+		c.defaultPollingStrat = strat
 	}
 }
 
@@ -45,33 +45,37 @@ type PollingStrategy func(retrieved, expected int64) time.Duration
 // at the min duration but is multipled for every read that did not return
 // any messages up to the max duration. The backoff duration is reset to min
 // everytime a message is read.
-func ExpBackoffPolling(min, max time.Duration, multiplier float64) PollingStrategy {
-	noMessageCount := 0
-	return func(retrieved, _ int64) time.Duration {
-		if retrieved > 0 {
-			noMessageCount = 0
-			return time.Duration(0)
+func ExpBackoffPolling(min, max time.Duration, multiplier float64) func() PollingStrategy {
+	return func() PollingStrategy {
+		noMessageCount := 0
+		return func(retrieved, _ int64) time.Duration {
+			if retrieved > 0 {
+				noMessageCount = 0
+				return time.Duration(0)
+			}
+
+			backoff := time.Duration(math.Pow(multiplier, float64(noMessageCount))) * min
+			noMessageCount++
+
+			if backoff > max {
+				return max
+			}
+
+			return backoff
 		}
-
-		backoff := time.Duration(math.Pow(multiplier, float64(noMessageCount))) * min
-		noMessageCount++
-
-		if backoff > max {
-			return max
-		}
-
-		return backoff
 	}
 }
 
 // ConstantPolling returns a constant interval polling strategy
-func ConstantPolling(interval time.Duration) PollingStrategy {
-	return func(retrieved, _ int64) time.Duration {
-		if retrieved > 0 {
-			return time.Duration(0)
-		}
+func ConstantPolling(interval time.Duration) func() PollingStrategy {
+	return func() PollingStrategy {
+		return func(retrieved, _ int64) time.Duration {
+			if retrieved > 0 {
+				return time.Duration(0)
+			}
 
-		return interval
+			return interval
+		}
 	}
 }
 
@@ -100,10 +104,19 @@ func WithStreamCondition(condition string) GetStreamOption {
 	}
 }
 
+// WithStreamPollingStrategy sets the polling strategy for this stream
+// subscription. Polling Strategies are only used in subscriptions.
+func WithStreamPollingStrategy(strat PollingStrategy) GetStreamOption {
+	return func(cfg *streamConfig) {
+		cfg.pollingStrat = strat
+	}
+}
+
 type streamConfig struct {
-	version   int64
-	batchSize int64
-	condition string
+	version      int64
+	batchSize    int64
+	condition    string
+	pollingStrat PollingStrategy
 }
 
 func (cfg *streamConfig) validate() error {
@@ -124,10 +137,11 @@ func (cfg *streamConfig) getCondition() interface{} {
 	return cfg.condition
 }
 
-func newDefaultStreamConfig() *streamConfig {
+func newDefaultStreamConfig(strat PollingStrategy) *streamConfig {
 	return &streamConfig{
-		version:   0,
-		batchSize: 1000,
+		version:      0,
+		batchSize:    1000,
+		pollingStrat: strat,
 	}
 }
 
@@ -178,6 +192,14 @@ func WithCategoryCondition(condition string) GetCategoryOption {
 	}
 }
 
+// WithCategoryPollingStrategy sets the polling strategy for this category
+// subscription. Polling Strategies are only used in subscriptions.
+func WithCategoryPollingStrategy(strat PollingStrategy) GetCategoryOption {
+	return func(cfg *categoryConfig) {
+		cfg.pollingStrat = strat
+	}
+}
+
 type categoryConfig struct {
 	position            int64
 	batchSize           int64
@@ -185,12 +207,14 @@ type categoryConfig struct {
 	consumerGroupMember int64
 	consumerGroupSize   int64
 	condition           string
+	pollingStrat        PollingStrategy
 }
 
-func newDefaultCategoryConfig() *categoryConfig {
+func newDefaultCategoryConfig(strat PollingStrategy) *categoryConfig {
 	return &categoryConfig{
-		position:  0,
-		batchSize: 1000,
+		position:     0,
+		batchSize:    1000,
+		pollingStrat: strat,
 	}
 }
 
