@@ -338,6 +338,8 @@ func (c *Client) SubscribeToStream(
 				return
 			}
 
+			poll.Reset(cfg.pollingStrat(int64(len(msgs)), cfg.batchSize))
+
 			for _, msg := range msgs {
 				handleMessage(msg)
 			}
@@ -355,8 +357,6 @@ func (c *Client) SubscribeToStream(
 				live = false
 				handleLiveness(live)
 			}
-
-			poll.Reset(cfg.pollingStrat(int64(len(msgs)), cfg.batchSize))
 		}
 	}()
 
@@ -425,6 +425,8 @@ func (c *Client) SubscribeToCategory(
 				return
 			}
 
+			poll.Reset(cfg.pollingStrat(int64(len(msgs)), cfg.batchSize))
+
 			for _, msg := range msgs {
 				handleMessage(msg)
 			}
@@ -442,8 +444,6 @@ func (c *Client) SubscribeToCategory(
 				live = false
 				handleLiveness(live)
 			}
-
-			poll.Reset(cfg.pollingStrat(int64(len(msgs)), cfg.batchSize))
 		}
 	}()
 

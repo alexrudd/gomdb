@@ -19,14 +19,40 @@ func Test_PollingStrategies(t *testing.T) {
 		{
 			name:      "constant polling",
 			strategy:  ConstantPolling(time.Second)(),
-			retrieved: []int64{0, 0, 1, 1},
-			delays:    []time.Duration{time.Second, time.Second, 0, 0},
+			retrieved: []int64{0, 1, 2},
+			expected:  2,
+			delays:    []time.Duration{time.Second, time.Second, 0},
 		},
 		{
 			name:      "exponential polling",
 			strategy:  ExpBackoffPolling(time.Second, 10*time.Second, 2)(),
-			retrieved: []int64{1, 1, 0, 0, 0, 0, 0, 0},
-			delays:    []time.Duration{0, 0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second},
+			retrieved: []int64{2, 1, 0, 0, 0, 0, 0, 0},
+			expected:  2,
+			delays: []time.Duration{
+				0,
+				time.Second,
+				time.Second,
+				2 * time.Second,
+				4 * time.Second,
+				8 * time.Second,
+				10 * time.Second,
+				10 * time.Second,
+			},
+		},
+		{
+			name:      "dynamic polling",
+			strategy:  DynamicPolling(0.75, 50*time.Millisecond, 100*time.Millisecond, time.Second)(),
+			retrieved: []int64{90, 50, 60, 70, 80, 75, 100},
+			expected:  100,
+			delays: []time.Duration{
+				100 * time.Millisecond,
+				150 * time.Millisecond,
+				200 * time.Millisecond,
+				250 * time.Millisecond,
+				200 * time.Millisecond,
+				200 * time.Millisecond,
+				0,
+			},
 		},
 	}
 
@@ -38,7 +64,7 @@ func Test_PollingStrategies(t *testing.T) {
 			for i, r := range tc.retrieved {
 				d := tc.strategy(r, tc.expected)
 				if d != tc.delays[i] {
-					t.Fatalf("on retreived %v expected delay %s, actual %s", r, d, tc.delays[i])
+					t.Fatalf("on retreived %v/%v expected delay %s, actual %s", r, tc.expected, tc.delays[i], d)
 				}
 			}
 		})
