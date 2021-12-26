@@ -48,10 +48,13 @@ type PollingStrategy func(retrieved, expected int64) time.Duration
 func ExpBackoffPolling(min, max time.Duration, multiplier float64) func() PollingStrategy {
 	return func() PollingStrategy {
 		noMessageCount := 0
-		return func(retrieved, _ int64) time.Duration {
-			if retrieved > 0 {
+		return func(retrieved, expected int64) time.Duration {
+			if retrieved == expected {
 				noMessageCount = 0
 				return time.Duration(0)
+			} else if retrieved > 0 {
+				noMessageCount = 0
+				return min
 			}
 
 			backoff := time.Duration(math.Pow(multiplier, float64(noMessageCount))) * min
@@ -66,11 +69,53 @@ func ExpBackoffPolling(min, max time.Duration, multiplier float64) func() Pollin
 	}
 }
 
+// DynamicPolling returns a factory for a PollingStrategy that will dynamically
+// adjust a subscription's polling delay by the step amount so as to hit a
+// target read utilisation.
+// Read utilisation is the number of messages retreived over the number of
+// messages expoected.
+func DynamicPolling(target float64, step, min, max time.Duration) func() PollingStrategy {
+	if target > 1 || target <= 0 {
+		panic("target percentage must be in the range: 0>n<=1")
+	}
+
+	return func() PollingStrategy {
+		var (
+			delay  = min
+			actual = float64(0)
+		)
+
+		return func(retrieved, expected int64) time.Duration {
+			if retrieved == expected {
+				return time.Duration(0)
+			}
+
+			actual = float64(retrieved) / float64(expected)
+
+			// adjust appropriately to reach target
+			if actual < target {
+				delay += step
+			} else if actual > target {
+				delay -= step
+			}
+
+			// clamp between max/min
+			if delay > max {
+				delay = max
+			} else if delay < min {
+				delay = min
+			}
+
+			return delay
+		}
+	}
+}
+
 // ConstantPolling returns a constant interval polling strategy
 func ConstantPolling(interval time.Duration) func() PollingStrategy {
 	return func() PollingStrategy {
-		return func(retrieved, _ int64) time.Duration {
-			if retrieved > 0 {
+		return func(retrieved, expected int64) time.Duration {
+			if retrieved == expected {
 				return time.Duration(0)
 			}
 
