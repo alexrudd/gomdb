@@ -4,11 +4,16 @@ import "time"
 
 type state struct {
 	version      int64                // version of the group state
-	leader       string               // current leader of the group
+	leader       leader               // current leader of the group
 	active       map[string]*consumer // active consumers in current milestone
 	idle         map[string]*consumer // idle consumers ready for next milestone
 	lastComplete time.Time            // time of last partition completion
 	milestone    *milestone           // current milestone
+}
+
+type leader struct {
+	id    string
+	until time.Time
 }
 
 type consumer struct {
@@ -28,11 +33,15 @@ type milestone struct {
 // Events
 
 type LeaderDeclared struct {
-	ID string
+	ID    string
+	Until time.Time
 }
 
 func (cmd *LeaderDeclared) apply(s *state) {
-	s.leader = cmd.ID
+	s.leader = leader{
+		id:    cmd.ID,
+		until: cmd.Until,
+	}
 }
 
 type ConsumerCheckedIn struct {
