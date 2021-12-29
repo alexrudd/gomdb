@@ -1,88 +1,52 @@
 package cgroup
 
-import "time"
+import (
+	"time"
+)
 
-type state struct {
-	version      int64                // version of the group state
-	leader       leader               // current leader of the group
-	active       map[string]*consumer // active consumers in current milestone
-	idle         map[string]*consumer // idle consumers ready for next milestone
-	lastComplete time.Time            // time of last partition completion
-	milestone    *milestone           // current milestone
+// GroupState is the complete state of a consumer group including all active and
+// idle consumers, and the goals for the current milestone. All consumers in a
+// group build an identical version on the GroupState so that they can make
+// desicions asynchronously.
+type GroupState struct {
+	Version          int64
+	Name             string
+	Category         string
+	Leader           string
+	LeaderExpires    time.Time
+	ActiveConsumers  map[string]*ConsumerState
+	IdleConsumers    map[string]*ConsumerState
+	CurrentMilestone *Milestone
 }
 
-type leader struct {
-	id    string
-	until time.Time
+// ConsumerState contains the progress that a consumer has made towards the
+// current milestone.
+type ConsumerState struct {
+	ConsumerID        string
+	CurrentPosition   int64
+	MilestoneComplete bool
+	Debt              []*DebtState
 }
 
-type consumer struct {
-	id       string // unique ID of the consumer
-	position int64  // current position of the consumer
-	complete bool   // has this consumer completed their partition
+// contains the progress that a consumer has made towards clearing their debt.
+type DebtState struct {
+	ParitionDebt
+	CurrentPosition int64
+	DebtCleared     bool
 }
 
-type milestone struct {
-	id         string           // unique ID of the milestone
-	from       int64            // the inclusive global position to start from
-	ends       int64            // the position to end before
-	partitions map[string]int   // partition assignments for consumers
-	debt       map[string]int64 // debt carried over from previous milestones
+// Milestone
+type Milestone struct {
+	From       int64                      // the inclusive global position to start from
+	End        int64                      // the position to end before
+	Partitions map[string]int             // the index that each consumer should consume
+	Debt       map[string][]*ParitionDebt // debt from the previous milestones that has been assigned to a consumer
 }
 
-// Events
-
-type LeaderDeclared struct {
-	ID    string
-	Until time.Time
-}
-
-func (cmd *LeaderDeclared) apply(s *state) {
-	s.leader = leader{
-		id:    cmd.ID,
-		until: cmd.Until,
-	}
-}
-
-type ConsumerCheckedIn struct {
-	ID       string
-	Position int64
-	Complete bool
-}
-
-func (cmd *ConsumerCheckedIn) apply(s *state) {
-	if !cmd.Complete {
-		s.active[cmd.ID] = &consumer{
-			id:       cmd.ID,
-			position: cmd.Position,
-			complete: cmd.Complete,
-		}
-	} else if s.active[cmd.ID] != nil {
-		s.lastComplete = time.Now()
-		delete(s.active, cmd.ID)
-	}
-
-	s.idle[cmd.ID] = &consumer{
-		id:       cmd.ID,
-		position: cmd.Position,
-		complete: cmd.Complete,
-	}
-}
-
-type MilestoneStarted struct {
-	ID         string
-	From       int64
-	Ends       int64
-	Partitions map[string]int
-	Debt       map[string]int64
-}
-
-func (cmd *MilestoneStarted) apply(s *state) {
-	s.milestone = &milestone{
-		id:         cmd.ID,
-		from:       cmd.From,
-		ends:       cmd.Ends,
-		partitions: cmd.Partitions,
-		debt:       cmd.Debt,
-	}
+// ParitionDebt
+type ParitionDebt struct {
+	GroupSize int
+	Partition int
+	From      int64 // the inclusive global position to start from
+	End       int64 // the position to end before
 }
