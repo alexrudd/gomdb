@@ -57,7 +57,7 @@ func NewClient(t *testing.T) *gomdb.Client {
 
 // GenUUID returns a unique UUID.
 func GenUUID() string {
-	return uuid.NewV4().String()
+	return uuid.Must(uuid.NewV4()).String()
 }
 
 // NewTestStream creates a new StreamIdentifier using the provided category

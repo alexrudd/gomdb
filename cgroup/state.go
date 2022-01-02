@@ -19,6 +19,16 @@ type GroupState struct {
 	CurrentMilestone *Milestone
 }
 
+func (gs *GroupState) activeConsumersAreAlive() bool {
+	active := false
+
+	for _, cs := range gs.ActiveConsumers {
+		active = active || cs.NextCheckIn.After(time.Now())
+	}
+
+	return active
+}
+
 // ConsumerState contains the progress that a consumer has made towards the
 // current milestone.
 type ConsumerState struct {
@@ -26,6 +36,8 @@ type ConsumerState struct {
 	CurrentPosition   int64
 	MilestoneComplete bool
 	Debt              []*DebtState
+	CheckedIn         time.Time
+	NextCheckIn       time.Time
 }
 
 // contains the progress that a consumer has made towards clearing their debt.
@@ -37,16 +49,35 @@ type DebtState struct {
 
 // Milestone
 type Milestone struct {
+	ID         int64
 	From       int64                      // the inclusive global position to start from
 	End        int64                      // the position to end before
-	Partitions map[string]int             // the index that each consumer should consume
+	Partitions map[string]int64           // the index that each consumer should consume
 	Debt       map[string][]*ParitionDebt // debt from the previous milestones that has been assigned to a consumer
+}
+
+func (ms *Milestone) initialStateFor(consumerID string) *ConsumerState {
+	cs := &ConsumerState{
+		ConsumerID:        consumerID,
+		CurrentPosition:   ms.From - 1,
+		MilestoneComplete: false,
+	}
+
+	for _, dbt := range ms.Debt[consumerID] {
+		cs.Debt = append(cs.Debt, &DebtState{
+			ParitionDebt:    *dbt,
+			CurrentPosition: dbt.From - 1,
+			DebtCleared:     false,
+		})
+	}
+
+	return cs
 }
 
 // ParitionDebt
 type ParitionDebt struct {
-	GroupSize int
-	Partition int
+	GroupSize int64
+	Partition int64
 	From      int64 // the inclusive global position to start from
 	End       int64 // the position to end before
 }

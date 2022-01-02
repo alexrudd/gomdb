@@ -33,7 +33,7 @@ func main() {
 	client := gomdb.NewClient(db)
 	stream := gomdb.StreamIdentifier{
 		Category: "demo",
-		ID:       uuid.NewV4().String(),
+		ID:       uuid.Must(uuid.NewV4()).String(),
 	}
 
 	// write a message
@@ -41,7 +41,7 @@ func main() {
 		context.Background(),
 		stream,
 		gomdb.ProposedMessage{
-			ID:   uuid.NewV4().String(),
+			ID:   uuid.Must(uuid.NewV4()).String(),
 			Type: "DemoMessage",
 			Data: &Message{
 				AttributeA: "Demo",

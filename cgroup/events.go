@@ -42,7 +42,7 @@ func eventFromMessage(m *gomdb.Message) (event, error) {
 	}
 
 	if err := m.UnmarshalData(evt); err != nil {
-		return nil, fmt.Errorf("unmarshalling event to %T: %w", err)
+		return nil, fmt.Errorf("unmarshalling event to %T: %w", evt, err)
 	}
 
 	return evt, nil
@@ -124,4 +124,5 @@ func (e *MilestoneStarted) Type() string {
 func (e *MilestoneStarted) Apply(gs *GroupState, ver int64) {
 	gs.Version = ver
 	gs.CurrentMilestone = &e.Milestone
+	// TODO: clear active and idle consumers?
 }
