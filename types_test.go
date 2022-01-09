@@ -57,6 +57,73 @@ func Test_ProposedMessage_validate(t *testing.T) {
 	}
 }
 
+func Test_ParseStreamIdentifier(t *testing.T) {
+	testcases := []struct {
+		input  string
+		sid    StreamIdentifier
+		expErr error
+	}{
+		{
+			input:  "",
+			sid:    StreamIdentifier{},
+			expErr: ErrInvalidStreamIdentifier,
+		},
+		{
+			input:  "-",
+			sid:    StreamIdentifier{},
+			expErr: ErrInvalidStreamIdentifier,
+		},
+		{
+			input: "a-b",
+			sid: StreamIdentifier{
+				Category: "a",
+				ID:       "b",
+			},
+		},
+		{
+			input:  "cat",
+			sid:    StreamIdentifier{},
+			expErr: ErrInvalidStreamIdentifier,
+		},
+		{
+			input:  "cat_egory",
+			sid:    StreamIdentifier{},
+			expErr: ErrInvalidStreamIdentifier,
+		},
+		{
+			input: "cat_egory-123abc",
+			sid: StreamIdentifier{
+				Category: "cat_egory",
+				ID:       "123abc",
+			},
+		},
+		{
+			input: "cat_egory-123-abc",
+			sid: StreamIdentifier{
+				Category: "cat_egory",
+				ID:       "123-abc",
+			},
+		},
+	}
+
+	for _, tc := range testcases {
+		tc := tc
+		t.Run(tc.input, func(t *testing.T) {
+			sid, err := ParseStreamIdentifier(tc.input)
+
+			if sid.Category != tc.sid.Category {
+				t.Errorf("category: expected %s, actual %s", tc.sid.Category, sid.Category)
+			}
+			if sid.ID != tc.sid.ID {
+				t.Errorf("ID: expected %s, actual %s", tc.sid.ID, sid.ID)
+			}
+			if !errors.Is(err, tc.expErr) {
+				t.Fatalf("expected %v, actual %v", tc.expErr, err)
+			}
+		})
+	}
+}
+
 func Test_StreamIdentifier_validate(t *testing.T) {
 	testcases := []struct {
 		name   string

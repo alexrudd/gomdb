@@ -3,8 +3,8 @@ package cgroup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/alexrudd/gomdb"
@@ -29,6 +29,13 @@ func NewClient(mdbc *gomdb.Client) *Client {
 	}
 }
 
+type config struct {
+	groupManagementPeriod time.Duration
+	updateStatePeriod     time.Duration
+	checkinPeriod         time.Duration
+	checkinFrequency      int
+}
+
 func (c *Client) JoinGroup(
 	ctx context.Context,
 	group, category, consumerID string,
@@ -36,281 +43,341 @@ func (c *Client) JoinGroup(
 ) error {
 	var (
 		gs = &GroupState{
+			Name:            group,
 			Version:         gomdb.NoStreamVersion,
 			ActiveConsumers: map[string]*ConsumerState{},
 			IdleConsumers:   map[string]*ConsumerState{},
 		}
-		gsMtx = &sync.Mutex{}
-		cs    = &ConsumerState{
+		cs = &ConsumerState{
+			ConsumerID:        consumerID,
 			MilestoneComplete: true,
 		}
-		csMtx       = &sync.Mutex{}
-		pctx, stop  = context.WithCancel(ctx)
-		live        = false
-		outerr      error
-		groupStream = gomdb.StreamIdentifier{
-			Category: GroupCategory,
-			ID:       group,
+		cfg = &config{
+			groupManagementPeriod: time.Second,
+			updateStatePeriod:     time.Second,
+			checkinPeriod:         time.Second,
+			checkinFrequency:      20,
 		}
+		strat = gomdb.DynamicPolling(
+			0.5,
+			10*time.Millisecond,
+			10*time.Millisecond,
+			time.Second,
+		)()
+		outerr error
 	)
 
-	// subscribe to consumer group stream and catch up
-	go func() {
-		c.log.Printf("Starting group state subscription")
+	updateStateNow := make(chan struct{}, 1)
+	updateStateTimer := time.NewTimer(0)
+	defer updateStateTimer.Stop()
 
-		outerr = c.mdbc.SubscribeToStream(pctx, groupStream, func(m *gomdb.Message) {
-			evt, err := eventFromMessage(m)
-			if err != nil {
-				c.log.Printf("converting messaging to consumer group event: %s", err)
-				return
-			}
+	checkInNow := make(chan struct{}, 1)
+	checkinTimer := time.NewTimer(time.Millisecond)
+	defer checkinTimer.Stop()
 
-			c.log.Printf("Received group state event %d:%s", m.Version, evt.Type())
+	manageGroupNow := make(chan struct{}, 1)
+	manageGroupTimer := time.NewTimer(0)
+	<-manageGroupTimer.C // clear timer until we've caught up on state
+	defer manageGroupTimer.Stop()
 
-			gsMtx.Lock()
-			defer gsMtx.Unlock()
-
-			evt.Apply(gs, m.Version)
-
-			// if a MilestoneStarted event is received then rebuild consumer
-			// state from the Milestone
-			if live && evt.Type() == MilestoneStartedEventType {
-				csMtx.Lock()
-				defer csMtx.Unlock()
-
-				// replace consumer state using milestone goal
-				cs = gs.CurrentMilestone.initialStateFor(consumerID)
-			}
-		}, func(b bool) {
-			live = b
-		}, func(e error) {
-			c.log.Printf("received error on subscription: %s", e)
-		})
-		if outerr != nil {
-			c.log.Printf("stopping group state subscription: %s", outerr)
-			stop()
-		}
-	}()
-
-	// try to be leader as often as possible
-	go func() {
-		t := time.NewTicker(50 * time.Millisecond)
-		defer t.Stop()
-
-		for {
-			select {
-			case <-pctx.Done():
-				return
-			case <-t.C:
-			}
-
-			if live {
-				c.log.Printf("Doing group management")
-
-				gsMtx.Lock()
-
-				// has the leader expired or am I the leader and am about to
-				// expire?
-				var (
-					noLeader               = gs.LeaderExpires.Before(time.Now())
-					myLeadershipIsExpiring = gs.Leader == consumerID && gs.LeaderExpires.Before(time.Now().Add(time.Second))
-				)
-
-				if noLeader || myLeadershipIsExpiring {
-					c.log.Printf("Declaring leader")
-
-					evt := &LeaderDeclared{
-						GroupName:  group,
-						ConsumerID: consumerID,
-						Until:      time.Now().Add(5 * time.Second),
-					}
-
-					_, err := c.mdbc.WriteMessage(pctx, groupStream, gomdb.ProposedMessage{
-						ID:   uuid.Must(uuid.NewV4()).String(),
-						Type: evt.Type(),
-						Data: evt,
-					}, gs.Version)
-					if err != nil {
-						if !errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
-							c.log.Printf("writing LeaderDeclared event: %s", err)
-							outerr = err
-							stop()
-						}
-					}
-
-					gsMtx.Unlock()
-					continue
-				}
-
-				// have all consumers completed or died?
-				if len(gs.IdleConsumers) > 0 && (len(gs.ActiveConsumers) == 0 || !gs.activeConsumersAreAlive()) {
-					current := gs.CurrentMilestone
-					next := Milestone{
-						ID:         1,
-						From:       0,
-						End:        100,
-						Partitions: map[string]int64{},
-						Debt:       map[string][]*ParitionDebt{},
-					}
-
-					if current != nil {
-						next.ID = current.ID + 1
-						next.From = current.End
-						next.End = next.From + 100
-					}
-
-					// get all idle consumers
-					var idlers []string
-					for cid, cs := range gs.IdleConsumers {
-						if cs.NextCheckIn.After(time.Now()) {
-							idlers = append(idlers, cid)
-						}
-					}
-
-					// capture any debt from current milestone
-					var debts []*ParitionDebt
-					for cid, cs := range gs.ActiveConsumers {
-						debts = append(debts, &ParitionDebt{
-							GroupSize: int64(len(current.Partitions)),
-							Partition: current.Partitions[cid],
-							From:      cs.CurrentPosition + 1,
-							End:       current.End,
-						})
-
-						for _, dbt := range cs.Debt {
-							debts = append(debts, &ParitionDebt{
-								GroupSize: dbt.GroupSize,
-								Partition: dbt.Partition,
-								From:      dbt.CurrentPosition + 1,
-								End:       dbt.End,
-							})
-						}
-					}
-
-					// partition milestone
-					for idx, cid := range idlers {
-						next.Partitions[cid] = int64(idx)
-					}
-
-					// partition debt
-					for idx, dbt := range debts {
-
-						cid := idlers[idx%len(idlers)]
-						next.Debt[cid] = append(next.Debt[cid], dbt)
-					}
-
-					evt := &MilestoneStarted{
-						GroupName: group,
-						Milestone: next,
-					}
-					_, err := c.mdbc.WriteMessage(pctx, groupStream, gomdb.ProposedMessage{
-						ID:   uuid.Must(uuid.NewV4()).String(),
-						Type: evt.Type(),
-						Data: evt,
-					}, gs.Version)
-					if err != nil {
-						if !errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
-							c.log.Printf("writing MilestoneStarted event: %s", err)
-							outerr = err
-							stop()
-						}
-					}
-
-					gsMtx.Unlock()
-					continue
-				}
-
-				gsMtx.Unlock()
-			}
-		}
-	}()
-
-	// when live, publish a ConsumerCheckIn events at regular intervals (pause if not live)
-	go func() {
-		t := time.NewTicker(100 * time.Millisecond)
-		defer t.Stop()
-
-		for {
-			select {
-			case <-pctx.Done():
-				return
-			case <-t.C:
-			}
-
-			if live {
-				csMtx.Lock()
-				gsMtx.Lock()
-
-				cs.CheckedIn = time.Now()
-				cs.NextCheckIn = cs.CheckedIn.Add(110 * time.Millisecond)
-
-				evt := &ConsumerCheckedIn{
-					GroupName:     group,
-					ConsumerState: *cs,
-				}
-
-				_, err := c.mdbc.WriteMessage(pctx, groupStream, gomdb.ProposedMessage{
-					ID:   uuid.Must(uuid.NewV4()).String(),
-					Type: evt.Type(),
-					Data: evt,
-				}, gs.Version)
-				if err != nil {
-					if !errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
-						c.log.Printf("writing consumer check in event: %s", err)
-						outerr = err
-						stop()
-					}
-				}
-
-				csMtx.Unlock()
-				gsMtx.Unlock()
-			}
-
-		}
-	}()
-
-	// iterate to progress through milestone
-	t := time.NewTimer(0)
-	defer t.Stop()
+	readMessagesTimer := time.NewTimer(0)
+	<-readMessagesTimer.C // clear timer until we're ready to read messages
+	defer readMessagesTimer.Stop()
 
 	for {
+		var (
+			updated      = false
+			checkedIn    = false
+			managedGroup = false
+			endReached   = false
+			delay        time.Duration
+		)
+
 		select {
-		case <-pctx.Done():
-			return outerr
-		case <-t.C:
+		case <-ctx.Done():
+			return nil
+		case <-updateStateNow:
+			// Group state
+			updated, outerr = c.updateState(ctx, gs)
+			// if !updateStateTimer.Stop() {
+			// 	<-updateStateTimer.C
+			// }
+			updateStateTimer.Reset(cfg.updateStatePeriod)
+		case <-updateStateTimer.C:
+			updated, outerr = c.updateState(ctx, gs)
+			// if !updateStateTimer.Stop() {
+			// 	<-updateStateTimer.C
+			// }
+			updateStateTimer.Reset(cfg.updateStatePeriod)
+
+		case <-checkInNow:
+			checkedIn, outerr = c.checkIn(ctx, gs, cs, cfg.checkinPeriod)
+			// if !checkinTimer.Stop() {
+			// 	<-checkinTimer.C
+			// }
+			checkinTimer.Reset(cfg.checkinPeriod)
+		case <-checkinTimer.C:
+			checkedIn, outerr = c.checkIn(ctx, gs, cs, cfg.checkinPeriod)
+			// if !checkinTimer.Stop() {
+			// 	<-checkinTimer.C
+			// }
+			checkinTimer.Reset(cfg.checkinPeriod)
+
+		case <-manageGroupNow:
+			managedGroup, outerr = c.manageGroup(ctx, gs, cs)
+			// if !manageGroupTimer.Stop() {
+			// 	<-manageGroupTimer.C
+			// }
+			manageGroupTimer.Reset(cfg.groupManagementPeriod)
+		case <-manageGroupTimer.C:
+			managedGroup, outerr = c.manageGroup(ctx, gs, cs)
+			// if !manageGroupTimer.Stop() {
+			// 	<-manageGroupTimer.C
+			// }
+			manageGroupTimer.Reset(cfg.groupManagementPeriod)
+
+		case <-readMessagesTimer.C:
+			delay, endReached, outerr = c.readMessages(ctx, gs, cs, handleMessage, strat)
+			// if !readMessagesTimer.Stop() {
+			// 	<-readMessagesTimer.C
+			// }
+			readMessagesTimer.Reset(delay)
 		}
 
-		var msgs []*gomdb.Message
+		if outerr != nil {
+			return outerr
+		}
 
-		if ms := gs.CurrentMilestone; live && ms != nil {
-			csMtx.Lock()
-
-			msgs, outerr = c.mdbc.GetCategoryMessages(
-				pctx,
-				category,
-				gomdb.AsConsumerGroup(ms.Partitions[consumerID], int64(len(ms.Partitions))),
-				gomdb.FromPosition(cs.CurrentPosition+1),
-				gomdb.WithCategoryBatchSize(10),
-			)
-
-			if len(msgs) == 10 {
-				t.Reset(0)
-			} else {
-				t.Reset(10 * time.Millisecond)
+		switch {
+		case managedGroup:
+			select {
+			case updateStateNow <- struct{}{}:
+			default:
 			}
-
-			for _, m := range msgs {
-				if m.GlobalPosition >= ms.End {
-					break
-				}
-
-				handleMessage(m)
-				cs.CurrentPosition = m.GlobalPosition
+		case checkedIn:
+			select {
+			case updateStateNow <- struct{}{}:
+			default:
 			}
-
-			csMtx.Unlock()
+		case updated || !updated && gs.Version == gomdb.NoStreamVersion:
+			select {
+			case manageGroupNow <- struct{}{}:
+			default:
+			}
+		case endReached:
+			select {
+			case checkInNow <- struct{}{}:
+			default:
+			}
 		}
 	}
+}
+
+func (c *Client) updateState(ctx context.Context, gs *GroupState) (bool, error) {
+	msgs, err := c.mdbc.GetStreamMessages(ctx, gomdb.StreamIdentifier{
+		Category: GroupCategory,
+		ID:       gs.Name,
+	}, gomdb.FromVersion(gs.Version+1))
+	if err != nil {
+		return false, fmt.Errorf("reading group state stream: %w", err)
+	}
+
+	// there have been no state changes
+	if len(msgs) == 0 {
+		return false, nil
+	}
+
+	for _, m := range msgs {
+		evt, err := eventFromMessage(m)
+		if err != nil {
+			continue
+		}
+
+		evt.Apply(gs, m.Version)
+	}
+
+	return true, nil
+}
+
+func (c *Client) checkIn(ctx context.Context, gs *GroupState, cs *ConsumerState, period time.Duration) (bool, error) {
+	cs.CheckedIn = time.Now()
+	cs.NextCheckIn = cs.CheckedIn.Add(time.Duration(float64(period) * 1.1)) // give 10% leeway
+
+	evt := &ConsumerCheckedIn{
+		GroupName:     gs.Name,
+		ConsumerState: *cs,
+	}
+
+	_, err := c.mdbc.WriteMessage(ctx, gomdb.StreamIdentifier{
+		Category: gs.Category,
+		ID:       gs.Name,
+	}, gomdb.ProposedMessage{
+		ID:   uuid.Must(uuid.NewV4()).String(),
+		Type: evt.Type(),
+		Data: evt,
+	}, gs.Version)
+	if err != nil {
+		if errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("writing message: %w", err)
+	}
+
+	return true, nil
+}
+
+func (c *Client) manageGroup(ctx context.Context, gs *GroupState, cs *ConsumerState) (bool, error) {
+	// has the leader expired or am I the leader and am about to expire?
+	var (
+		noLeader               = time.Now().After(gs.LeaderExpires)
+		myLeadershipIsExpiring = gs.Leader == cs.ConsumerID && gs.LeaderExpires.Before(time.Now().Add(time.Second))
+	)
+
+	if noLeader || myLeadershipIsExpiring {
+		c.log.Printf("Declaring leader")
+
+		evt := &LeaderDeclared{
+			GroupName:  gs.Name,
+			ConsumerID: cs.ConsumerID,
+			Until:      time.Now().Add(5 * time.Second),
+		}
+
+		_, err := c.mdbc.WriteMessage(ctx, gomdb.StreamIdentifier{
+			Category: GroupCategory,
+			ID:       gs.Name,
+		}, gomdb.ProposedMessage{
+			ID:   uuid.Must(uuid.NewV4()).String(),
+			Type: evt.Type(),
+			Data: evt,
+		}, gs.Version)
+		if err != nil {
+			if errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
+				return false, nil
+			}
+			return false, fmt.Errorf("writing leader declared event: %w", err)
+		}
+
+		return true, nil
+	}
+
+	// have all consumers completed or died?
+	if gs.thereAreIdleConsumers() && (len(gs.ActiveConsumers) == 0 || gs.activeConsumersHaveExpired()) {
+		current := gs.CurrentMilestone
+		next := Milestone{
+			ID:         1,
+			From:       0,
+			End:        100,
+			Partitions: map[string]int64{},
+			Debt:       map[string][]*ParitionDebt{},
+		}
+
+		if current != nil {
+			next.ID = current.ID + 1
+			next.From = current.End
+			next.End = next.From + 100
+		}
+
+		// get all idle consumers
+		var idlers []string
+		for cid, cs := range gs.IdleConsumers {
+			if cs.NextCheckIn.After(time.Now()) {
+				idlers = append(idlers, cid)
+			}
+		}
+
+		// capture any debt from current milestone
+		var debts []*ParitionDebt
+		for cid, cs := range gs.ActiveConsumers {
+			debts = append(debts, &ParitionDebt{
+				GroupSize: int64(len(current.Partitions)),
+				Partition: current.Partitions[cid],
+				From:      cs.CurrentPosition + 1,
+				End:       current.End,
+			})
+
+			for _, dbt := range cs.Debt {
+				debts = append(debts, &ParitionDebt{
+					GroupSize: dbt.GroupSize,
+					Partition: dbt.Partition,
+					From:      dbt.CurrentPosition + 1,
+					End:       dbt.End,
+				})
+			}
+		}
+
+		// partition milestone
+		for idx, cid := range idlers {
+			next.Partitions[cid] = int64(idx)
+		}
+
+		// partition debt
+		for idx, dbt := range debts {
+
+			cid := idlers[idx%len(idlers)]
+			next.Debt[cid] = append(next.Debt[cid], dbt)
+		}
+
+		evt := &MilestoneStarted{
+			GroupName: gs.Name,
+			Milestone: next,
+		}
+		_, err := c.mdbc.WriteMessage(ctx, gomdb.StreamIdentifier{
+			Category: GroupCategory,
+			ID:       gs.Name,
+		}, gomdb.ProposedMessage{
+			ID:   uuid.Must(uuid.NewV4()).String(),
+			Type: evt.Type(),
+			Data: evt,
+		}, gs.Version)
+		if err != nil {
+			if errors.Is(err, gomdb.ErrUnexpectedStreamVersion) {
+				return false, nil
+			}
+			return false, fmt.Errorf("writing milestone started event: %w", err)
+		}
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (c *Client) readMessages(
+	ctx context.Context,
+	gs *GroupState,
+	cs *ConsumerState,
+	mh gomdb.MessageHandler,
+	strat gomdb.PollingStrategy,
+) (time.Duration, bool, error) {
+	if gs.CurrentMilestone == nil || cs.MilestoneComplete {
+		return time.Hour, false, nil
+	}
+
+	ms := gs.CurrentMilestone
+
+	msgs, err := c.mdbc.GetCategoryMessages(
+		ctx,
+		gs.Category,
+		gomdb.AsConsumerGroup(ms.Partitions[cs.ConsumerID], int64(len(ms.Partitions))),
+		gomdb.FromPosition(cs.CurrentPosition+1),
+		gomdb.WithCategoryBatchSize(100),
+	)
+	if err != nil {
+		return time.Hour, false, fmt.Errorf("reading category messages: %w", err)
+	}
+
+	for _, m := range msgs {
+		if m.GlobalPosition >= ms.End {
+			cs.MilestoneComplete = true
+			return time.Hour, true, nil
+		}
+
+		mh(m)
+		cs.CurrentPosition = m.GlobalPosition
+	}
+
+	return strat(int64(len(msgs)), 100), false, nil
 }
 
 // GroupStateHandler
@@ -326,6 +393,7 @@ func (c *Client) ObserveGroup(
 ) error {
 	var (
 		gs = &GroupState{
+			Name:            group,
 			ActiveConsumers: map[string]*ConsumerState{},
 			IdleConsumers:   map[string]*ConsumerState{},
 		}

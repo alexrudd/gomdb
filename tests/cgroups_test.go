@@ -3,10 +3,10 @@ package tests
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/alexrudd/gomdb"
 	"github.com/alexrudd/gomdb/cgroup"
+	"gopkg.in/yaml.v3"
 )
 
 func TestJoinConsumerGroup(t *testing.T) {
@@ -39,44 +39,54 @@ func TestJoinConsumerGroup(t *testing.T) {
 
 	group := GenUUID()
 	client := cgroup.NewClient(c)
-	gCtx, stop := context.WithTimeout(context.TODO(), 3*time.Second)
+	gCtx, stop := context.WithCancel(context.TODO())
 
 	go func() {
 		err := client.ObserveGroup(gCtx, group, func(gs *cgroup.GroupState, e interface{}, b bool) {
-			t.Logf("Event %T:\n%+v", e, e)
-			t.Logf(`Group state:
-Live: %v
-Version: %v
-Leader: %s
-Leader Expires in: %s
-Active consumers: %d
-Idle consumers: %d
-			`,
-				b,
-				gs.Version,
-				gs.Leader,
-				time.Until(gs.LeaderExpires),
-				len(gs.ActiveConsumers),
-				len(gs.IdleConsumers),
-			)
+			event, _ := yaml.Marshal(e)
+			state, _ := yaml.Marshal(gs)
+
+			t.Logf("Event (%T):\n%s\n\nState:\n%s\n\n", e, event, state)
 		})
 		if err != nil {
 			t.Log(err)
 		}
 	}()
 
-	err := client.JoinGroup(gCtx, group, category, "con1", func(m *gomdb.Message) {
+	// c1Ctx, c1 := context.WithTimeout(gCtx, 10*time.Second)
+	// defer c1()
+
+	// go func() {
+	_ = client.JoinGroup(gCtx, group, category, "con1", func(m *gomdb.Message) {
 		received[m.GlobalPosition] = true
 
-		t.Logf("Received message: %d", m.GlobalPosition)
+		t.Logf("con1 received message: %d", m.GlobalPosition)
 
 		if m.GlobalPosition == lastPos {
 			stop()
 		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// }()
+
+	// c2Ctx, c2 := context.WithTimeout(gCtx, 10*time.Second)
+	// defer c2()
+
+	// go func() {
+
+	// 	_ = client.JoinGroup(c2Ctx, group, category, "con2", func(m *gomdb.Message) {
+	// 		received[m.GlobalPosition] = true
+
+	// 		t.Logf("con2 received message: %d", m.GlobalPosition)
+
+	// 		if m.GlobalPosition == lastPos {
+	// 			c2()
+	// 		}
+	// 	})
+	// }()
+
+	<-gCtx.Done()
+	// <-c2Ctx.Done()
+	stop()
 
 	for pos, r := range received {
 		if !r {

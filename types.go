@@ -27,6 +27,8 @@ var (
 	ErrInvalidCategory = fmt.Errorf("category cannot contain separator (%s)", StreamNameSeparator)
 	// ErrMissingStreamID is returned when the stream identifier ID is missing.
 	ErrMissingStreamID = errors.New("ID cannot be blank")
+
+	ErrInvalidStreamIdentifier = errors.New("could not parse stream identifier")
 )
 
 // StreamNameSeparator is the character used to separate the stream category
@@ -60,6 +62,11 @@ func deserialiseMessage(row scanner) (*Message, error) {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
+		return nil, err
+	}
+
+	msg.Stream, err = ParseStreamIdentifier(streamName)
+	if err != nil {
 		return nil, err
 	}
 
@@ -102,6 +109,28 @@ func (pm *ProposedMessage) validate() error {
 type StreamIdentifier struct {
 	Category string
 	ID       string
+}
+
+// ParseStreamIdentifier parses a stream identifier string into its structured
+// representation.
+func ParseStreamIdentifier(sid string) (StreamIdentifier, error) {
+	if len(sid) < 3 {
+		return StreamIdentifier{}, fmt.Errorf("%w: identifier missing category or ID", ErrInvalidStreamIdentifier)
+	}
+
+	idx := strings.Index(sid, StreamNameSeparator)
+	if idx == -1 {
+		return StreamIdentifier{}, fmt.Errorf(
+			"%w: identifier does not contain separator (%s)",
+			ErrInvalidStreamIdentifier,
+			StreamNameSeparator,
+		)
+	}
+
+	return StreamIdentifier{
+		Category: sid[:idx],
+		ID:       sid[idx+1:],
+	}, nil
 }
 
 // String returns the string respresentation of a StreamIdentifier.

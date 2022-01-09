@@ -19,14 +19,24 @@ type GroupState struct {
 	CurrentMilestone *Milestone
 }
 
-func (gs *GroupState) activeConsumersAreAlive() bool {
+func (gs *GroupState) activeConsumersHaveExpired() bool {
 	active := false
 
 	for _, cs := range gs.ActiveConsumers {
 		active = active || cs.NextCheckIn.After(time.Now())
 	}
 
-	return active
+	return !active
+}
+
+func (gs *GroupState) thereAreIdleConsumers() bool {
+	idle := false
+
+	for _, cs := range gs.IdleConsumers {
+		idle = idle || gs.CurrentMilestone == nil || cs.MilestoneID == gs.CurrentMilestone.ID || cs.MilestoneID == 0
+	}
+
+	return idle
 }
 
 // ConsumerState contains the progress that a consumer has made towards the
@@ -34,6 +44,7 @@ func (gs *GroupState) activeConsumersAreAlive() bool {
 type ConsumerState struct {
 	ConsumerID        string
 	CurrentPosition   int64
+	MilestoneID       int64
 	MilestoneComplete bool
 	Debt              []*DebtState
 	CheckedIn         time.Time
@@ -58,6 +69,7 @@ type Milestone struct {
 
 func (ms *Milestone) initialStateFor(consumerID string) *ConsumerState {
 	cs := &ConsumerState{
+		MilestoneID:       ms.ID,
 		ConsumerID:        consumerID,
 		CurrentPosition:   ms.From - 1,
 		MilestoneComplete: false,
