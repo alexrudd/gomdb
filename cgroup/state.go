@@ -10,6 +10,7 @@ import (
 // desicions asynchronously.
 type GroupState struct {
 	Version          int64
+	HighWaterMark    int64
 	Name             string
 	Category         string
 	Leader           string
@@ -33,7 +34,7 @@ func (gs *GroupState) thereAreIdleConsumers() bool {
 	idle := false
 
 	for _, cs := range gs.IdleConsumers {
-		idle = idle || gs.CurrentMilestone == nil || cs.MilestoneID == gs.CurrentMilestone.ID || cs.MilestoneID == 0
+		idle = idle || (gs.CurrentMilestone != nil && cs.MilestoneID == gs.CurrentMilestone.ID) || cs.MilestoneID == 0
 	}
 
 	return idle

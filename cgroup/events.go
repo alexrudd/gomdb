@@ -11,7 +11,7 @@ import (
 // conform to.
 type event interface {
 	// Apply this event to the provided GroupState.
-	Apply(gs *GroupState, ver int64)
+	Apply(gs *GroupState, ver, pos int64)
 	// Type returns the type name of this event.
 	Type() string
 }
@@ -67,8 +67,9 @@ func (e *LeaderDeclared) Type() string {
 
 // Apply will set the leader of the provided GroupState that the consumer ID
 // stored in the event and update the expirary time.
-func (e *LeaderDeclared) Apply(gs *GroupState, ver int64) {
+func (e *LeaderDeclared) Apply(gs *GroupState, ver, pos int64) {
 	gs.Version = ver
+	gs.HighWaterMark = pos
 	gs.Leader = e.ConsumerID
 	gs.LeaderExpires = e.Until
 }
@@ -90,8 +91,9 @@ func (e *ConsumerCheckedIn) Type() string {
 
 // Apply will update the active consumer state in the GroupState, and move the
 // consumer to the idle set if it has completed its milestone.
-func (e *ConsumerCheckedIn) Apply(gs *GroupState, ver int64) {
+func (e *ConsumerCheckedIn) Apply(gs *GroupState, ver, pos int64) {
 	gs.Version = ver
+	gs.HighWaterMark = pos
 
 	// if complete put the consumer in the idle set, else put the consumer in
 	// the active set.
@@ -121,8 +123,10 @@ func (e *MilestoneStarted) Type() string {
 
 // Apply will set the current milestone of the group to the milestone in the
 // event.
-func (e *MilestoneStarted) Apply(gs *GroupState, ver int64) {
+func (e *MilestoneStarted) Apply(gs *GroupState, ver, pos int64) {
 	gs.Version = ver
+	gs.HighWaterMark = pos
 	gs.CurrentMilestone = &e.Milestone
-	// TODO: clear active and idle consumers?
+	gs.IdleConsumers = map[string]*ConsumerState{}
+	gs.ActiveConsumers = map[string]*ConsumerState{}
 }

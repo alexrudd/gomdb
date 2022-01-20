@@ -13,7 +13,7 @@ func TestJoinConsumerGroup(t *testing.T) {
 	c := NewClient(t)
 	received := map[int64]bool{}
 	category := NewTestCategory("cgroup")
-	lastPos := int64(0)
+	// lastPos := int64(0)
 
 	// populate a category
 	for i := 0; i < 10; i++ {
@@ -34,7 +34,7 @@ func TestJoinConsumerGroup(t *testing.T) {
 		}
 
 		received[msg.GlobalPosition] = false
-		lastPos = msg.GlobalPosition
+		// lastPos = msg.GlobalPosition
 	}
 
 	group := GenUUID()
@@ -57,15 +57,18 @@ func TestJoinConsumerGroup(t *testing.T) {
 	// defer c1()
 
 	// go func() {
-	_ = client.JoinGroup(gCtx, group, category, "con1", func(m *gomdb.Message) {
+	err := client.JoinGroup(gCtx, group, category, "con1", func(m *gomdb.Message) {
 		received[m.GlobalPosition] = true
 
 		t.Logf("con1 received message: %d", m.GlobalPosition)
 
-		if m.GlobalPosition == lastPos {
-			stop()
-		}
+		// if m.GlobalPosition == lastPos {
+		// 	stop()
+		// }
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// }()
 
 	// c2Ctx, c2 := context.WithTimeout(gCtx, 10*time.Second)

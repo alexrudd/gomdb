@@ -43,8 +43,9 @@ func (c *Client) JoinGroup(
 ) error {
 	var (
 		gs = &GroupState{
-			Name:            group,
 			Version:         gomdb.NoStreamVersion,
+			Name:            group,
+			Category:        category,
 			ActiveConsumers: map[string]*ConsumerState{},
 			IdleConsumers:   map[string]*ConsumerState{},
 		}
@@ -72,7 +73,7 @@ func (c *Client) JoinGroup(
 	defer updateStateTimer.Stop()
 
 	checkInNow := make(chan struct{}, 1)
-	checkinTimer := time.NewTimer(time.Millisecond)
+	checkinTimer := time.NewTimer(100 * time.Millisecond)
 	defer checkinTimer.Stop()
 
 	manageGroupNow := make(chan struct{}, 1)
@@ -86,11 +87,13 @@ func (c *Client) JoinGroup(
 
 	for {
 		var (
-			updated      = false
-			checkedIn    = false
-			managedGroup = false
-			endReached   = false
-			delay        time.Duration
+			live             = false
+			updated          = false
+			checkedIn        = false
+			managedGroup     = false
+			startedMilestone = false
+			endReached       = false
+			delay            time.Duration
 		)
 
 		select {
@@ -98,13 +101,13 @@ func (c *Client) JoinGroup(
 			return nil
 		case <-updateStateNow:
 			// Group state
-			updated, outerr = c.updateState(ctx, gs)
+			updated, startedMilestone, live, outerr = c.updateState(ctx, gs)
 			// if !updateStateTimer.Stop() {
 			// 	<-updateStateTimer.C
 			// }
 			updateStateTimer.Reset(cfg.updateStatePeriod)
 		case <-updateStateTimer.C:
-			updated, outerr = c.updateState(ctx, gs)
+			updated, startedMilestone, live, outerr = c.updateState(ctx, gs)
 			// if !updateStateTimer.Stop() {
 			// 	<-updateStateTimer.C
 			// }
@@ -149,7 +152,7 @@ func (c *Client) JoinGroup(
 		}
 
 		switch {
-		case managedGroup:
+		case live && managedGroup:
 			select {
 			case updateStateNow <- struct{}{}:
 			default:
@@ -159,10 +162,19 @@ func (c *Client) JoinGroup(
 			case updateStateNow <- struct{}{}:
 			default:
 			}
-		case updated || !updated && gs.Version == gomdb.NoStreamVersion:
+		case live && (updated || !updated && gs.Version == gomdb.NoStreamVersion):
 			select {
 			case manageGroupNow <- struct{}{}:
 			default:
+			}
+			if startedMilestone {
+				cs = gs.CurrentMilestone.initialStateFor(consumerID)
+				readMessagesTimer.Reset(0)
+
+				select {
+				case checkInNow <- struct{}{}:
+				default:
+				}
 			}
 		case endReached:
 			select {
@@ -173,19 +185,21 @@ func (c *Client) JoinGroup(
 	}
 }
 
-func (c *Client) updateState(ctx context.Context, gs *GroupState) (bool, error) {
+func (c *Client) updateState(ctx context.Context, gs *GroupState) (bool, bool, bool, error) {
 	msgs, err := c.mdbc.GetStreamMessages(ctx, gomdb.StreamIdentifier{
 		Category: GroupCategory,
 		ID:       gs.Name,
-	}, gomdb.FromVersion(gs.Version+1))
+	}, gomdb.FromVersion(gs.Version+1), gomdb.WithStreamBatchSize(100))
 	if err != nil {
-		return false, fmt.Errorf("reading group state stream: %w", err)
+		return false, false, false, fmt.Errorf("reading group state stream: %w", err)
 	}
 
 	// there have been no state changes
 	if len(msgs) == 0 {
-		return false, nil
+		return false, false, true, nil
 	}
+
+	ms := false
 
 	for _, m := range msgs {
 		evt, err := eventFromMessage(m)
@@ -193,10 +207,12 @@ func (c *Client) updateState(ctx context.Context, gs *GroupState) (bool, error) 
 			continue
 		}
 
-		evt.Apply(gs, m.Version)
+		ms = ms || evt.Type() == MilestoneStartedEventType
+
+		evt.Apply(gs, m.Version, m.GlobalPosition)
 	}
 
-	return true, nil
+	return true, ms, len(msgs) != 100, nil
 }
 
 func (c *Client) checkIn(ctx context.Context, gs *GroupState, cs *ConsumerState, period time.Duration) (bool, error) {
@@ -209,7 +225,7 @@ func (c *Client) checkIn(ctx context.Context, gs *GroupState, cs *ConsumerState,
 	}
 
 	_, err := c.mdbc.WriteMessage(ctx, gomdb.StreamIdentifier{
-		Category: gs.Category,
+		Category: GroupCategory,
 		ID:       gs.Name,
 	}, gomdb.ProposedMessage{
 		ID:   uuid.Must(uuid.NewV4()).String(),
@@ -235,8 +251,6 @@ func (c *Client) manageGroup(ctx context.Context, gs *GroupState, cs *ConsumerSt
 	)
 
 	if noLeader || myLeadershipIsExpiring {
-		c.log.Printf("Declaring leader")
-
 		evt := &LeaderDeclared{
 			GroupName:  gs.Name,
 			ConsumerID: cs.ConsumerID,
@@ -261,8 +275,12 @@ func (c *Client) manageGroup(ctx context.Context, gs *GroupState, cs *ConsumerSt
 		return true, nil
 	}
 
+	if cs.ConsumerID != gs.Leader {
+		return false, nil
+	}
+
 	// have all consumers completed or died?
-	if gs.thereAreIdleConsumers() && (len(gs.ActiveConsumers) == 0 || gs.activeConsumersHaveExpired()) {
+	if gs.thereAreIdleConsumers() && (len(gs.ActiveConsumers) == 0 || gs.activeConsumersHaveExpired()) && (gs.CurrentMilestone == nil || gs.CurrentMilestone.End <= gs.HighWaterMark) {
 		current := gs.CurrentMilestone
 		next := Milestone{
 			ID:         1,
@@ -410,12 +428,14 @@ func (c *Client) ObserveGroup(
 			return
 		}
 
-		evt.Apply(gs, m.Version)
+		evt.Apply(gs, m.Version, m.GlobalPosition)
 
 		stateHandler(gs, evt, live)
 	}, func(b bool) {
 		live = b
 	}, func(e error) {
-		c.log.Printf("received error on subscription: %s", e)
+		if e != nil {
+			c.log.Printf("received error on subscription: %s", e)
+		}
 	})
 }
